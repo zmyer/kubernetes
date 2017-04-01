@@ -17,17 +17,21 @@ limitations under the License.
 package kubelet
 
 import (
+	"fmt"
 	"net"
-	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/kubernetes/pkg/api/v1"
 	"k8s.io/kubernetes/pkg/util/bandwidth"
 )
 
 func TestNodeIPParam(t *testing.T) {
 	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
 	tests := []struct {
 		nodeIP   string
@@ -58,10 +62,10 @@ func TestNodeIPParam(t *testing.T) {
 	for _, test := range tests {
 		kubelet.nodeIP = net.ParseIP(test.nodeIP)
 		err := kubelet.validateNodeIP()
-		if err != nil && test.success {
-			t.Errorf("Test: %s, expected no error but got: %v", test.testName, err)
-		} else if err == nil && !test.success {
-			t.Errorf("Test: %s, expected an error", test.testName)
+		if test.success {
+			assert.NoError(t, err, "test %s", test.testName)
+		} else {
+			assert.Error(t, err, fmt.Sprintf("test %s", test.testName))
 		}
 	}
 }
@@ -96,18 +100,84 @@ func TestParseResolvConf(t *testing.T) {
 		{"#comment\nnameserver 1.2.3.4\n#comment\nsearch foo\ncomment", []string{"1.2.3.4"}, []string{"foo"}},
 	}
 	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+	defer testKubelet.Cleanup()
 	kubelet := testKubelet.kubelet
 	for i, tc := range testCases {
 		ns, srch, err := kubelet.parseResolvConf(strings.NewReader(tc.data))
-		if err != nil {
-			t.Errorf("expected success, got %v", err)
-			continue
+		require.NoError(t, err)
+		assert.EqualValues(t, tc.nameservers, ns, "test case [%d]: name servers", i)
+		assert.EqualValues(t, tc.searches, srch, "test case [%d] searches", i)
+	}
+}
+
+func TestComposeDNSSearch(t *testing.T) {
+	testKubelet := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+	kubelet := testKubelet.kubelet
+
+	recorder := record.NewFakeRecorder(20)
+	kubelet.recorder = recorder
+
+	pod := podWithUidNameNs("", "test_pod", "testNS")
+	kubelet.clusterDomain = "TEST"
+
+	testCases := []struct {
+		dnsNames     []string
+		hostNames    []string
+		resultSearch []string
+		events       []string
+	}{
+		{
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST"},
+			[]string{},
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST"},
+			[]string{},
+		},
+
+		{
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST"},
+			[]string{"AAA", "svc.TEST", "BBB", "TEST"},
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB"},
+			[]string{
+				"Found and omitted duplicated dns domain in host search line: 'svc.TEST' during merging with cluster dns domains",
+				"Found and omitted duplicated dns domain in host search line: 'TEST' during merging with cluster dns domains",
+			},
+		},
+
+		{
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST"},
+			[]string{"AAA", strings.Repeat("B", 256), "BBB"},
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA"},
+			[]string{"Search Line limits were exceeded, some dns names have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST AAA"},
+		},
+
+		{
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST"},
+			[]string{"AAA", "TEST", "BBB", "TEST", "CCC", "DDD"},
+			[]string{"testNS.svc.TEST", "svc.TEST", "TEST", "AAA", "BBB", "CCC"},
+			[]string{
+				"Found and omitted duplicated dns domain in host search line: 'TEST' during merging with cluster dns domains",
+				"Found and omitted duplicated dns domain in host search line: 'TEST' during merging with cluster dns domains",
+				"Search Line limits were exceeded, some dns names have been omitted, the applied search line is: testNS.svc.TEST svc.TEST TEST AAA BBB CCC",
+			},
+		},
+	}
+
+	fetchEvent := func(recorder *record.FakeRecorder) string {
+		select {
+		case event := <-recorder.Events:
+			return event
+		default:
+			return "No more events!"
 		}
-		if !reflect.DeepEqual(ns, tc.nameservers) {
-			t.Errorf("[%d] expected nameservers %#v, got %#v", i, tc.nameservers, ns)
-		}
-		if !reflect.DeepEqual(srch, tc.searches) {
-			t.Errorf("[%d] expected searches %#v, got %#v", i, tc.searches, srch)
+	}
+
+	for i, tc := range testCases {
+		dnsSearch := kubelet.formDNSSearch(tc.hostNames, pod)
+		assert.EqualValues(t, tc.resultSearch, dnsSearch, "test [%d]", i)
+		for _, expectedEvent := range tc.events {
+			expected := fmt.Sprintf("%s %s %s", v1.EventTypeWarning, "DNSSearchForming", expectedEvent)
+			event := fetchEvent(recorder)
+			assert.Equal(t, expected, event, "test [%d]", i)
 		}
 	}
 }
@@ -178,6 +248,7 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 		}
 
 		testKube := newTestKubelet(t, false /* controllerAttachDetachEnabled */)
+		defer testKube.Cleanup()
 		testKube.kubelet.shaper = shaper
 
 		for _, pod := range test.pods {
@@ -185,12 +256,8 @@ func TestCleanupBandwidthLimits(t *testing.T) {
 		}
 
 		err := testKube.kubelet.cleanupBandwidthLimits(test.pods)
-		if err != nil {
-			t.Errorf("unexpected error: %v (%s)", test.name, err)
-		}
-		if !reflect.DeepEqual(shaper.ResetCIDRs, test.expectResetCIDRs) {
-			t.Errorf("[%s]\nexpected: %v, saw: %v", test.name, test.expectResetCIDRs, shaper.ResetCIDRs)
-		}
+		assert.NoError(t, err, "test [%s]", test.name)
+		assert.EqualValues(t, test.expectResetCIDRs, shaper.ResetCIDRs, "test[%s]", test.name)
 	}
 }
 
@@ -210,8 +277,6 @@ func TestGetIPTablesMark(t *testing.T) {
 	}
 	for _, tc := range tests {
 		res := getIPTablesMark(tc.bit)
-		if res != tc.expect {
-			t.Errorf("getIPTablesMark output unexpected result: %v when input bit is %d. Expect result: %v", res, tc.bit, tc.expect)
-		}
+		assert.Equal(t, tc.expect, res, "input %d", tc.bit)
 	}
 }

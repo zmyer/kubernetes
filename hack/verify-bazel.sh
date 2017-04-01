@@ -20,10 +20,21 @@ set -o pipefail
 export KUBE_ROOT=$(dirname "${BASH_SOURCE}")/..
 source "${KUBE_ROOT}/hack/lib/init.sh"
 
-go get -u gopkg.in/mikedanese/gazel.v8/gazel
-if [[ $("${GOPATH}/bin/gazel" -dry-run -print-diff -root="$(kube::realpath ${KUBE_ROOT})" 2>&1 | tee /dev/stderr | wc -l | tr -d '[:space:]') != 0 ]]; then
+go get gopkg.in/mikedanese/gazel.v14/gazel
+
+for path in ${GOPATH//:/ }; do
+  if [[ -e "${path}/bin/gazel" ]]; then
+    gazel="${path}/bin/gazel"
+    break
+  fi
+done
+if [[ -z "${gazel:-}" ]]; then
+  echo "Couldn't find gazel on the GOPATH."
+  exit 1
+fi
+
+if ! "${gazel}" -validate -print-diff -root="$(kube::realpath ${KUBE_ROOT})" ; then
   echo
-  echo "BUILD files are not up to date"
   echo "Run ./hack/update-bazel.sh"
   exit 1
 fi

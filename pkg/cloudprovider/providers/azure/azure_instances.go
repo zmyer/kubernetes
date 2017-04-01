@@ -17,6 +17,7 @@ limitations under the License.
 package azure
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -24,7 +25,7 @@ import (
 	"k8s.io/kubernetes/pkg/cloudprovider"
 
 	"github.com/Azure/azure-sdk-for-go/arm/compute"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 // NodeAddresses returns the addresses of the specified instance.
@@ -38,6 +39,13 @@ func (az *Cloud) NodeAddresses(name types.NodeName) ([]v1.NodeAddress, error) {
 		{Type: v1.NodeInternalIP, Address: ip},
 		{Type: v1.NodeHostName, Address: string(name)},
 	}, nil
+}
+
+// NodeAddressesByProviderID returns the node addresses of an instances with the specified unique providerID
+// This method will not be called from the node that is requesting this ID. i.e. metadata service
+// and other local methods cannot be used here
+func (az *Cloud) NodeAddressesByProviderID(providerID string) ([]v1.NodeAddress, error) {
+	return []v1.NodeAddress{}, errors.New("unimplemented")
 }
 
 // ExternalID returns the cloud provider ID of the specified instance (deprecated).
@@ -55,6 +63,13 @@ func (az *Cloud) InstanceID(name types.NodeName) (string, error) {
 		return "", cloudprovider.InstanceNotFound
 	}
 	return *machine.ID, nil
+}
+
+// InstanceTypeByProviderID returns the cloudprovider instance type of the node with the specified unique providerID
+// This method will not be called from the node that is requesting this ID. i.e. metadata service
+// and other local methods cannot be used here
+func (az *Cloud) InstanceTypeByProviderID(providerID string) (string, error) {
+	return "", errors.New("unimplemented")
 }
 
 // InstanceType returns the type of the specified instance.

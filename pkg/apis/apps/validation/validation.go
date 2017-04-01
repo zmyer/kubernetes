@@ -19,13 +19,13 @@ package validation
 import (
 	"reflect"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	unversionedvalidation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/api"
 	apivalidation "k8s.io/kubernetes/pkg/api/validation"
 	"k8s.io/kubernetes/pkg/apis/apps"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	unversionedvalidation "k8s.io/kubernetes/pkg/apis/meta/v1/validation"
-	"k8s.io/kubernetes/pkg/labels"
-	"k8s.io/kubernetes/pkg/util/validation/field"
 )
 
 // ValidateStatefulSetName can be used to check whether the given StatefulSet name is valid.
@@ -85,6 +85,9 @@ func ValidateStatefulSetSpec(spec *apps.StatefulSetSpec, fldPath *field.Path) fi
 
 	if spec.Template.Spec.RestartPolicy != api.RestartPolicyAlways {
 		allErrs = append(allErrs, field.NotSupported(fldPath.Child("template", "spec", "restartPolicy"), spec.Template.Spec.RestartPolicy, []string{string(api.RestartPolicyAlways)}))
+	}
+	if spec.Template.Spec.ActiveDeadlineSeconds != nil {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("spec", "activeDeadlineSeconds"), spec.Template.Spec.ActiveDeadlineSeconds, "must not be specified"))
 	}
 
 	return allErrs

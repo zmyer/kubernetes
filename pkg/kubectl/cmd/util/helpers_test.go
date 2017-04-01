@@ -21,24 +21,23 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
-	"reflect"
 	"strings"
 	"syscall"
 	"testing"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/api"
-	"k8s.io/kubernetes/pkg/api/errors"
-	"k8s.io/kubernetes/pkg/api/meta"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
 	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/apimachinery/registered"
 	"k8s.io/kubernetes/pkg/apis/extensions"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/runtime/schema"
 	uexec "k8s.io/kubernetes/pkg/util/exec"
-	"k8s.io/kubernetes/pkg/util/validation/field"
 )
 
 func TestMerge(t *testing.T) {
@@ -53,13 +52,13 @@ func TestMerge(t *testing.T) {
 		{
 			kind: "Pod",
 			obj: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 			},
-			fragment: fmt.Sprintf(`{ "apiVersion": "%s" }`, registered.GroupOrDie(api.GroupName).GroupVersion.String()),
+			fragment: fmt.Sprintf(`{ "apiVersion": "%s" }`, api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()),
 			expected: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Spec: apitesting.DeepEqualSafePodSpec(),
@@ -70,7 +69,7 @@ func TestMerge(t *testing.T) {
 		{
 			kind: "Pod",
 			obj: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Spec: api.PodSpec{
@@ -86,9 +85,9 @@ func TestMerge(t *testing.T) {
 					},
 				},
 			},
-			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "containers": [ { "name": "c1", "image": "green-image" } ] } }`, registered.GroupOrDie(api.GroupName).GroupVersion.String()),
+			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "containers": [ { "name": "c1", "image": "green-image" } ] } }`, api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()),
 			expected: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Spec: api.PodSpec{
@@ -108,13 +107,13 @@ func TestMerge(t *testing.T) {
 		{
 			kind: "Pod",
 			obj: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 			},
-			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "volumes": [ {"name": "v1"}, {"name": "v2"} ] } }`, registered.GroupOrDie(api.GroupName).GroupVersion.String()),
+			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "volumes": [ {"name": "v1"}, {"name": "v2"} ] } }`, api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()),
 			expected: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Spec: api.PodSpec{
@@ -132,7 +131,7 @@ func TestMerge(t *testing.T) {
 					DNSPolicy:                     api.DNSClusterFirst,
 					TerminationGracePeriodSeconds: &grace,
 					SecurityContext:               &api.PodSecurityContext{},
-					Affinity:                      &api.Affinity{},
+					SchedulerName:                 api.DefaultSchedulerName,
 				},
 			},
 		},
@@ -154,7 +153,7 @@ func TestMerge(t *testing.T) {
 			obj: &api.Service{
 				Spec: api.ServiceSpec{},
 			},
-			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "ports": [ { "port": 0 } ] } }`, registered.GroupOrDie(api.GroupName).GroupVersion.String()),
+			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "ports": [ { "port": 0 } ] } }`, api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()),
 			expected: &api.Service{
 				Spec: api.ServiceSpec{
 					SessionAffinity: "None",
@@ -177,7 +176,7 @@ func TestMerge(t *testing.T) {
 					},
 				},
 			},
-			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "selector": { "version": "v2" } } }`, registered.GroupOrDie(api.GroupName).GroupVersion.String()),
+			fragment: fmt.Sprintf(`{ "apiVersion": "%s", "spec": { "selector": { "version": "v2" } } }`, api.Registry.GroupOrDie(api.GroupName).GroupVersion.String()),
 			expected: &api.Service{
 				Spec: api.ServiceSpec{
 					SessionAffinity: "None",
@@ -195,7 +194,7 @@ func TestMerge(t *testing.T) {
 		if !test.expectErr {
 			if err != nil {
 				t.Errorf("testcase[%d], unexpected error: %v", i, err)
-			} else if !reflect.DeepEqual(out, test.expected) {
+			} else if !apiequality.Semantic.DeepEqual(out, test.expected) {
 				t.Errorf("\n\ntestcase[%d]\nexpected:\n%+v\nsaw:\n%+v", i, test.expected, out)
 			}
 		}
@@ -339,7 +338,7 @@ func TestMaybeConvert(t *testing.T) {
 	}{
 		{
 			input: &api.Pod{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 			},
@@ -349,20 +348,20 @@ func TestMaybeConvert(t *testing.T) {
 					APIVersion: "v1",
 					Kind:       "Pod",
 				},
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 			},
 		},
 		{
 			input: &extensions.ThirdPartyResourceData{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Data: []byte("this is some data"),
 			},
 			expected: &extensions.ThirdPartyResourceData{
-				ObjectMeta: api.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Name: "foo",
 				},
 				Data: []byte("this is some data"),
@@ -375,7 +374,7 @@ func TestMaybeConvert(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-		if !reflect.DeepEqual(test.expected, obj) {
+		if !apiequality.Semantic.DeepEqual(test.expected, obj) {
 			t.Errorf("expected:\n%#v\nsaw:\n%#v\n", test.expected, obj)
 		}
 	}

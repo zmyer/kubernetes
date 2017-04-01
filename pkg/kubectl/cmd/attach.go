@@ -20,19 +20,22 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/spf13/cobra"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/kubernetes/pkg/api"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
 	coreclient "k8s.io/kubernetes/pkg/client/clientset_generated/internalclientset/typed/core/internalversion"
-	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/client/unversioned/remotecommand"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
+	"k8s.io/kubernetes/pkg/kubectl/resource"
 	remotecommandserver "k8s.io/kubernetes/pkg/kubelet/server/remotecommand"
-	utilerrors "k8s.io/kubernetes/pkg/util/errors"
+	"k8s.io/kubernetes/pkg/util/i18n"
 	"k8s.io/kubernetes/pkg/util/term"
 )
 
@@ -46,7 +49,16 @@ var (
 
 		# Switch to raw terminal mode, sends stdin to 'bash' in ruby-container from pod 123456-7890
 		# and sends stdout/stderr from 'bash' back to the client
-		kubectl attach 123456-7890 -c ruby-container -i -t`)
+		kubectl attach 123456-7890 -c ruby-container -i -t
+
+		# Get output from the first pod of a ReplicaSet named nginx
+		kubectl attach rs/nginx
+		`)
+)
+
+const (
+	defaultPodAttachTimeout = 60 * time.Second
+	defaultPodLogsTimeout   = 20 * time.Second
 )
 
 func NewCmdAttach(f cmdutil.Factory, cmdIn io.Reader, cmdOut, cmdErr io.Writer) *cobra.Command {
@@ -60,8 +72,8 @@ func NewCmdAttach(f cmdutil.Factory, cmdIn io.Reader, cmdOut, cmdErr io.Writer) 
 		Attach: &DefaultRemoteAttach{},
 	}
 	cmd := &cobra.Command{
-		Use:     "attach POD -c CONTAINER",
-		Short:   "Attach to a running container",
+		Use:     "attach (POD | TYPE/NAME) -c CONTAINER",
+		Short:   i18n.T("Attach to a running container"),
 		Long:    "Attach to a process that is already running inside an existing container.",
 		Example: attach_example,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -70,7 +82,7 @@ func NewCmdAttach(f cmdutil.Factory, cmdIn io.Reader, cmdOut, cmdErr io.Writer) 
 			cmdutil.CheckErr(options.Run())
 		},
 	}
-	// TODO support UID
+	cmdutil.AddPodRunningTimeoutFlag(cmd, defaultPodAttachTimeout)
 	cmd.Flags().StringVarP(&options.ContainerName, "container", "c", "", "Container name. If omitted, the first container in the pod will be chosen")
 	cmd.Flags().BoolVarP(&options.Stdin, "stdin", "i", false, "Pass stdin to the container")
 	cmd.Flags().BoolVarP(&options.TTY, "tty", "t", false, "Stdin is a TTY")
@@ -108,25 +120,53 @@ type AttachOptions struct {
 
 	Pod *api.Pod
 
-	Attach    RemoteAttach
-	PodClient coreclient.PodsGetter
-	Config    *restclient.Config
+	Attach        RemoteAttach
+	PodClient     coreclient.PodsGetter
+	GetPodTimeout time.Duration
+	Config        *restclient.Config
 }
 
 // Complete verifies command line arguments and loads data from the command environment
 func (p *AttachOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, argsIn []string) error {
 	if len(argsIn) == 0 {
-		return cmdutil.UsageError(cmd, "POD is required for attach")
+		return cmdutil.UsageError(cmd, "at least one argument is required for attach")
 	}
-	if len(argsIn) > 1 {
-		return cmdutil.UsageError(cmd, fmt.Sprintf("expected a single argument: POD, saw %d: %s", len(argsIn), argsIn))
+	if len(argsIn) > 2 {
+		return cmdutil.UsageError(cmd, fmt.Sprintf("expected fewer than three arguments: POD or TYPE/NAME or TYPE NAME, saw %d: %s", len(argsIn), argsIn))
 	}
-	p.PodName = argsIn[0]
 
 	namespace, _, err := f.DefaultNamespace()
 	if err != nil {
 		return err
 	}
+
+	p.GetPodTimeout, err = cmdutil.GetPodRunningTimeoutFlag(cmd)
+	if err != nil {
+		return cmdutil.UsageError(cmd, err.Error())
+	}
+
+	mapper, typer := f.Object()
+	builder := resource.NewBuilder(mapper, f.CategoryExpander(), typer, resource.ClientMapperFunc(f.ClientForMapping), f.Decoder(true)).
+		NamespaceParam(namespace).DefaultNamespace()
+
+	switch len(argsIn) {
+	case 1:
+		builder.ResourceNames("pods", argsIn[0])
+	case 2:
+		builder.ResourceNames(argsIn[0], argsIn[1])
+	}
+
+	obj, err := builder.Do().Object()
+	if err != nil {
+		return err
+	}
+
+	attachablePod, err := f.AttachablePodForObject(obj, p.GetPodTimeout)
+	if err != nil {
+		return err
+	}
+
+	p.PodName = attachablePod.Name
 	p.Namespace = namespace
 
 	config, err := f.ClientConfig()

@@ -30,7 +30,7 @@ else
   exit 1
 fi
 
-if [[ "${MASTER_OS_DISTRIBUTION}" == "debian" || "${MASTER_OS_DISTRIBUTION}" == "container-linux" || "${MASTER_OS_DISTRIBUTION}" == "trusty" || "${MASTER_OS_DISTRIBUTION}" == "gci" ]]; then
+if [[ "${MASTER_OS_DISTRIBUTION}" == "container-linux" || "${MASTER_OS_DISTRIBUTION}" == "trusty" || "${MASTER_OS_DISTRIBUTION}" == "gci" ]]; then
   source "${KUBE_ROOT}/cluster/gce/${MASTER_OS_DISTRIBUTION}/master-helper.sh"
 else
   echo "Cannot operate on cluster using master os distro: ${MASTER_OS_DISTRIBUTION}" >&2
@@ -114,17 +114,6 @@ function verify-prereqs() {
     fi
   done
   update-or-verify-gcloud
-}
-
-# Create a temp dir that'll be deleted at the end of this bash session.
-#
-# Vars set:
-#   KUBE_TEMP
-function ensure-temp-dir() {
-  if [[ -z ${KUBE_TEMP-} ]]; then
-    KUBE_TEMP=$(mktemp -d -t kubernetes.XXXXXX)
-    trap 'rm -rf "${KUBE_TEMP}"' EXIT
-  fi
 }
 
 # Use the gcloud defaults to find the project.  If it is already set in the
@@ -382,6 +371,9 @@ function get-master-env() {
   gcloud compute --project ${PROJECT} ssh --zone ${ZONE} ${KUBE_MASTER} --command \
     "curl --fail --silent -H 'Metadata-Flavor: Google' \
       'http://metadata/computeMetadata/v1/instance/attributes/kube-env'" 2>/dev/null
+  gcloud compute --project ${PROJECT} ssh --zone ${ZONE} ${KUBE_MASTER} --command \
+    "curl --fail --silent -H 'Metadata-Flavor: Google' \
+      'http://metadata/computeMetadata/v1/instance/attributes/kube-master-certs'" 2>/dev/null
 }
 
 # Robustly try to create a static ip.
@@ -488,6 +480,12 @@ function create-node-template() {
   if [[ "${PREEMPTIBLE_NODE}" == "true" ]]; then
     preemptible_minions="--preemptible --maintenance-policy TERMINATE"
   fi
+  local local_ssds=""
+  if [ ! -z ${NODE_LOCAL_SSDS+x} ]; then
+      for i in $(seq ${NODE_LOCAL_SSDS}); do
+          local_ssds="$local_ssds--local-ssd=interface=SCSI "
+      done
+  fi
   while true; do
     echo "Attempt ${attempt} to create ${1}" >&2
     if ! gcloud compute instance-templates create "$template_name" \
@@ -499,6 +497,7 @@ function create-node-template() {
       --image "${NODE_IMAGE}" \
       --tags "${NODE_TAG}" \
       --network "${NETWORK}" \
+      ${local_ssds} \
       ${preemptible_minions} \
       $2 \
       --can-ip-forward \
@@ -726,37 +725,6 @@ function get-master-disk-size() {
   fi
 }
 
-# Downloads cfssl into ${KUBE_TEMP}/cfssl directory
-#
-# Assumed vars:
-#   KUBE_TEMP: temporary directory
-#
-function download-cfssl {
-  mkdir -p "${KUBE_TEMP}/cfssl"
-  pushd "${KUBE_TEMP}/cfssl"
-
-  kernel=$(uname -s)
-  case "${kernel}" in
-    Linux)
-      curl -s -L -o cfssl https://pkg.cfssl.org/R1.2/cfssl_linux-amd64
-      curl -s -L -o cfssljson https://pkg.cfssl.org/R1.2/cfssljson_linux-amd64
-      ;;
-    Darwin)
-      curl -s -L -o cfssl https://pkg.cfssl.org/R1.2/cfssl_darwin-amd64
-      curl -s -L -o cfssljson https://pkg.cfssl.org/R1.2/cfssljson_darwin-amd64
-      ;;
-    *)
-      echo "Unknown, unsupported platform: ${kernel}." >&2
-      echo "Supported platforms: Linux, Darwin." >&2
-      exit 2
-  esac
-
-  chmod +x cfssl
-  chmod +x cfssljson
-
-  popd
-}
-
 
 # Generates SSL certificates for etcd cluster. Uses cfssl program.
 #
@@ -781,44 +749,14 @@ function create-etcd-certs {
   local ca_cert=${2:-}
   local ca_key=${3:-}
 
-  download-cfssl
+  GEN_ETCD_CA_CERT="${ca_cert}" GEN_ETCD_CA_KEY="${ca_key}" \
+    generate-etcd-cert "${KUBE_TEMP}/cfssl" "${host}" "peer" "peer"
 
   pushd "${KUBE_TEMP}/cfssl"
-
-  cat >ca-config.json <<EOF
-{
-    "signing": {
-        "default": {
-            "expiry": "168h"
-        },
-        "profiles": {
-            "client-server": {
-                "expiry": "43800h",
-                "usages": [
-                    "signing",
-                    "key encipherment"
-                ]
-            }
-        }
-    }
-}
-EOF
-  if [[ ! -z "${ca_key}" && ! -z "${ca_cert}" ]]; then
-    echo "${ca_key}" | base64 --decode > ca-key.pem
-    echo "${ca_cert}" | base64 --decode | gunzip > ca.pem
-  else
-    ./cfssl print-defaults csr > ca-csr.json
-    ./cfssl gencert -initca ca-csr.json | ./cfssljson -bare ca -
-  fi
-
-  echo '{"CN":"'"${host}"'","hosts":[""],"key":{"algo":"ecdsa","size":256}}' \
-      | ./cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=client-server -hostname="${host}" - \
-      | ./cfssljson -bare etcd
-
   ETCD_CA_KEY_BASE64=$(cat "ca-key.pem" | base64 | tr -d '\r\n')
   ETCD_CA_CERT_BASE64=$(cat "ca.pem" | gzip | base64 | tr -d '\r\n')
-  ETCD_PEER_KEY_BASE64=$(cat "etcd-key.pem" | base64 | tr -d '\r\n')
-  ETCD_PEER_CERT_BASE64=$(cat "etcd.pem" | gzip | base64 | tr -d '\r\n')
+  ETCD_PEER_KEY_BASE64=$(cat "peer-key.pem" | base64 | tr -d '\r\n')
+  ETCD_PEER_CERT_BASE64=$(cat "peer.pem" | gzip | base64 | tr -d '\r\n')
   popd
 }
 
@@ -864,6 +802,9 @@ function create-master() {
   # http://issue.k8s.io/3168
   KUBELET_TOKEN=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
   KUBE_PROXY_TOKEN=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+  if [[ "${ENABLE_NODE_PROBLEM_DETECTOR:-}" == "standalone" ]]; then
+    NODE_PROBLEM_DETECTOR_TOKEN=$(dd if=/dev/urandom bs=128 count=1 2>/dev/null | base64 | tr -d "=+/" | dd bs=32 count=1 2>/dev/null)
+  fi
 
   # Reserve the master's IP so that it can later be transferred to another VM
   # without disrupting the kubelets.

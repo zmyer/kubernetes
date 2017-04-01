@@ -11,6 +11,7 @@ load(
 go_library(
     name = "go_default_library",
     srcs = [
+        "admission_failure_handler_stub.go",
         "doc.go",
         "fake_handler_runner.go",
         "handlers.go",
@@ -24,11 +25,12 @@ go_library(
         "//pkg/kubelet/types:go_default_library",
         "//pkg/kubelet/util/format:go_default_library",
         "//pkg/security/apparmor:go_default_library",
-        "//pkg/types:go_default_library",
-        "//pkg/util/intstr:go_default_library",
+        "//plugin/pkg/scheduler/algorithm:go_default_library",
         "//plugin/pkg/scheduler/algorithm/predicates:go_default_library",
         "//plugin/pkg/scheduler/schedulercache:go_default_library",
         "//vendor:github.com/golang/glog",
+        "//vendor:k8s.io/apimachinery/pkg/types",
+        "//vendor:k8s.io/apimachinery/pkg/util/intstr",
     ],
 )
 
@@ -40,6 +42,19 @@ go_test(
     deps = [
         "//pkg/api/v1:go_default_library",
         "//pkg/kubelet/container:go_default_library",
-        "//pkg/util/intstr:go_default_library",
+        "//vendor:k8s.io/apimachinery/pkg/util/intstr",
     ],
+)
+
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
+    tags = ["automanaged"],
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [":package-srcs"],
+    tags = ["automanaged"],
 )

@@ -18,10 +18,8 @@ go_library(
     ],
     tags = ["automanaged"],
     deps = [
-        "//pkg/api/resource:go_default_library",
         "//pkg/api/v1:go_default_library",
         "//pkg/kubelet/types:go_default_library",
-        "//pkg/util/runtime:go_default_library",
         "//vendor:github.com/golang/glog",
         "//vendor:github.com/google/cadvisor/cache/memory",
         "//vendor:github.com/google/cadvisor/container",
@@ -33,6 +31,8 @@ go_library(
         "//vendor:github.com/google/cadvisor/manager",
         "//vendor:github.com/google/cadvisor/metrics",
         "//vendor:github.com/google/cadvisor/utils/sysfs",
+        "//vendor:k8s.io/apimachinery/pkg/api/resource",
+        "//vendor:k8s.io/apimachinery/pkg/util/runtime",
     ],
 )
 
@@ -46,4 +46,20 @@ go_test(
         "//vendor:github.com/google/cadvisor/info/v1",
         "//vendor:github.com/google/cadvisor/metrics",
     ],
+)
+
+filegroup(
+    name = "package-srcs",
+    srcs = glob(["**"]),
+    tags = ["automanaged"],
+    visibility = ["//visibility:private"],
+)
+
+filegroup(
+    name = "all-srcs",
+    srcs = [
+        ":package-srcs",
+        "//pkg/kubelet/cadvisor/testing:all-srcs",
+    ],
+    tags = ["automanaged"],
 )

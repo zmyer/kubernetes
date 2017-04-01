@@ -20,15 +20,16 @@ import (
 	"reflect"
 	"testing"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/kubernetes/pkg/api"
 	_ "k8s.io/kubernetes/pkg/api/install"
-	"k8s.io/kubernetes/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/api/v1"
 	_ "k8s.io/kubernetes/pkg/apis/extensions/install"
 	. "k8s.io/kubernetes/pkg/apis/extensions/v1beta1"
-	metav1 "k8s.io/kubernetes/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/runtime"
-	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
 func TestSetDefaultDaemonSet(t *testing.T) {
@@ -40,9 +41,9 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			RestartPolicy:                 v1.RestartPolicyAlways,
 			SecurityContext:               &v1.PodSecurityContext{},
 			TerminationGracePeriodSeconds: &period,
-			Affinity:                      &v1.Affinity{},
+			SchedulerName:                 api.DefaultSchedulerName,
 		},
-		ObjectMeta: v1.ObjectMeta{
+		ObjectMeta: metav1.ObjectMeta{
 			Labels: defaultLabels,
 		},
 	}
@@ -52,7 +53,7 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			RestartPolicy:                 v1.RestartPolicyAlways,
 			SecurityContext:               &v1.PodSecurityContext{},
 			TerminationGracePeriodSeconds: &period,
-			Affinity:                      &v1.Affinity{},
+			SchedulerName:                 api.DefaultSchedulerName,
 		},
 	}
 	tests := []struct {
@@ -66,7 +67,7 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 				},
 			},
 			expected: &DaemonSet{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: defaultLabels,
 				},
 				Spec: DaemonSetSpec{
@@ -74,12 +75,15 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 						MatchLabels: defaultLabels,
 					},
 					Template: defaultTemplate,
+					UpdateStrategy: DaemonSetUpdateStrategy{
+						Type: OnDeleteDaemonSetStrategyType,
+					},
 				},
 			},
 		},
 		{ // Labels change/defaulting test.
 			original: &DaemonSet{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
@@ -89,7 +93,7 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 				},
 			},
 			expected: &DaemonSet{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
@@ -99,6 +103,9 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 						MatchLabels: defaultLabels,
 					},
 					Template: defaultTemplate,
+					UpdateStrategy: DaemonSetUpdateStrategy{
+						Type: OnDeleteDaemonSetStrategyType,
+					},
 				},
 			},
 		},
@@ -107,6 +114,9 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			expected: &DaemonSet{
 				Spec: DaemonSetSpec{
 					Template: templateNoLabel,
+					UpdateStrategy: DaemonSetUpdateStrategy{
+						Type: OnDeleteDaemonSetStrategyType,
+					},
 				},
 			},
 		},
@@ -117,6 +127,9 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			expected: &DaemonSet{
 				Spec: DaemonSetSpec{
 					Template: templateNoLabel,
+					UpdateStrategy: DaemonSetUpdateStrategy{
+						Type: OnDeleteDaemonSetStrategyType,
+					},
 				},
 			},
 		},
@@ -127,6 +140,9 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			expected: &DaemonSet{
 				Spec: DaemonSetSpec{
 					Template: templateNoLabel,
+					UpdateStrategy: DaemonSetUpdateStrategy{
+						Type: OnDeleteDaemonSetStrategyType,
+					},
 				},
 			},
 		},
@@ -141,7 +157,7 @@ func TestSetDefaultDaemonSet(t *testing.T) {
 			t.Errorf("(%d) unexpected object: %v", i, got)
 			t.FailNow()
 		}
-		if !reflect.DeepEqual(got.Spec, expected.Spec) {
+		if !apiequality.Semantic.DeepEqual(got.Spec, expected.Spec) {
 			t.Errorf("(%d) got different than expected\ngot:\n\t%+v\nexpected:\n\t%+v", i, got.Spec, expected.Spec)
 		}
 	}
@@ -157,7 +173,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			RestartPolicy:                 v1.RestartPolicyAlways,
 			SecurityContext:               &v1.PodSecurityContext{},
 			TerminationGracePeriodSeconds: &period,
-			Affinity:                      &v1.Affinity{},
+			SchedulerName:                 api.DefaultSchedulerName,
 		},
 	}
 	tests := []struct {
@@ -280,7 +296,7 @@ func TestSetDefaultDeployment(t *testing.T) {
 			t.Errorf("unexpected object: %v", got)
 			t.FailNow()
 		}
-		if !reflect.DeepEqual(got.Spec, expected.Spec) {
+		if !apiequality.Semantic.DeepEqual(got.Spec, expected.Spec) {
 			t.Errorf("object mismatch!\nexpected:\n\t%+v\ngot:\n\t%+v", got.Spec, expected.Spec)
 		}
 	}
@@ -296,7 +312,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 			rs: &ReplicaSet{
 				Spec: ReplicaSetSpec{
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -309,14 +325,14 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 		},
 		{
 			rs: &ReplicaSet{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
 				},
 				Spec: ReplicaSetSpec{
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -329,7 +345,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 		},
 		{
 			rs: &ReplicaSet{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"bar": "foo",
 					},
@@ -341,7 +357,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 						},
 					},
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -361,7 +377,7 @@ func TestSetDefaultReplicaSet(t *testing.T) {
 						},
 					},
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -408,7 +424,7 @@ func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 			rs: ReplicaSet{
 				Spec: ReplicaSetSpec{
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -423,7 +439,7 @@ func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 				Spec: ReplicaSetSpec{
 					Replicas: newInt32(0),
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -438,7 +454,7 @@ func TestSetDefaultReplicaSetReplicas(t *testing.T) {
 				Spec: ReplicaSetSpec{
 					Replicas: newInt32(3),
 					Template: v1.PodTemplateSpec{
-						ObjectMeta: v1.ObjectMeta{
+						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"foo": "bar",
 							},
@@ -481,7 +497,7 @@ func TestDefaultRequestIsNotSetForReplicaSet(t *testing.T) {
 		Spec: ReplicaSetSpec{
 			Replicas: newInt32(3),
 			Template: v1.PodTemplateSpec{
-				ObjectMeta: v1.ObjectMeta{
+				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"foo": "bar",
 					},
@@ -496,78 +512,6 @@ func TestDefaultRequestIsNotSetForReplicaSet(t *testing.T) {
 	requestValue := defaultRequest[v1.ResourceCPU]
 	if requestValue.String() != "0" {
 		t.Errorf("Expected 0 request value, got: %s", requestValue.String())
-	}
-}
-
-func TestSetDefaultHorizontalPodAutoscalerMinReplicas(t *testing.T) {
-	tests := []struct {
-		hpa            HorizontalPodAutoscaler
-		expectReplicas int32
-	}{
-		{
-			hpa:            HorizontalPodAutoscaler{},
-			expectReplicas: 1,
-		},
-		{
-			hpa: HorizontalPodAutoscaler{
-				Spec: HorizontalPodAutoscalerSpec{
-					MinReplicas: newInt32(3),
-				},
-			},
-			expectReplicas: 3,
-		},
-	}
-
-	for _, test := range tests {
-		hpa := &test.hpa
-		obj2 := roundTrip(t, runtime.Object(hpa))
-		hpa2, ok := obj2.(*HorizontalPodAutoscaler)
-		if !ok {
-			t.Errorf("unexpected object: %v", hpa2)
-			t.FailNow()
-		}
-		if hpa2.Spec.MinReplicas == nil {
-			t.Errorf("unexpected nil MinReplicas")
-		} else if test.expectReplicas != *hpa2.Spec.MinReplicas {
-			t.Errorf("expected: %d MinReplicas, got: %d", test.expectReplicas, *hpa2.Spec.MinReplicas)
-		}
-	}
-}
-
-func TestSetDefaultHorizontalPodAutoscalerCpuUtilization(t *testing.T) {
-	tests := []struct {
-		hpa               HorizontalPodAutoscaler
-		expectUtilization int32
-	}{
-		{
-			hpa:               HorizontalPodAutoscaler{},
-			expectUtilization: 80,
-		},
-		{
-			hpa: HorizontalPodAutoscaler{
-				Spec: HorizontalPodAutoscalerSpec{
-					CPUUtilization: &CPUTargetUtilization{
-						TargetPercentage: int32(50),
-					},
-				},
-			},
-			expectUtilization: 50,
-		},
-	}
-
-	for _, test := range tests {
-		hpa := &test.hpa
-		obj2 := roundTrip(t, runtime.Object(hpa))
-		hpa2, ok := obj2.(*HorizontalPodAutoscaler)
-		if !ok {
-			t.Errorf("unexpected object: %v", hpa2)
-			t.FailNow()
-		}
-		if hpa2.Spec.CPUUtilization == nil {
-			t.Errorf("unexpected nil CPUUtilization")
-		} else if test.expectUtilization != hpa2.Spec.CPUUtilization.TargetPercentage {
-			t.Errorf("expected: %d CPUUtilization, got: %d", test.expectUtilization, hpa2.Spec.CPUUtilization.TargetPercentage)
-		}
 	}
 }
 
@@ -595,16 +539,4 @@ func newInt32(val int32) *int32 {
 	p := new(int32)
 	*p = val
 	return p
-}
-
-func newString(val string) *string {
-	p := new(string)
-	*p = val
-	return p
-}
-
-func newBool(val bool) *bool {
-	b := new(bool)
-	*b = val
-	return b
 }

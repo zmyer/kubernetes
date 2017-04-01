@@ -25,7 +25,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/arm/compute"
 	"github.com/Azure/azure-sdk-for-go/arm/network"
-	"k8s.io/kubernetes/pkg/types"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 const (
@@ -190,10 +190,6 @@ func serviceOwnsRule(service *v1.Service, rule string) bool {
 
 func getFrontendIPConfigName(service *v1.Service) string {
 	return cloudprovider.GetLoadBalancerName(service)
-}
-
-func getPublicIPName(clusterName string, service *v1.Service) string {
-	return fmt.Sprintf("%s-%s", clusterName, cloudprovider.GetLoadBalancerName(service))
 }
 
 // This returns the next available rule priority level for a given set of security rules.

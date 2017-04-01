@@ -20,13 +20,14 @@ import (
 	"fmt"
 	"io"
 
-	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
+	"k8s.io/apiserver/pkg/util/flag"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/kubernetes/pkg/kubectl/cmd/auth"
 	cmdconfig "k8s.io/kubernetes/pkg/kubectl/cmd/config"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/rollout"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/set"
 	"k8s.io/kubernetes/pkg/kubectl/cmd/templates"
 	cmdutil "k8s.io/kubernetes/pkg/kubectl/cmd/util"
-	"k8s.io/kubernetes/pkg/util/flag"
 	"k8s.io/kubernetes/pkg/util/i18n"
 
 	"github.com/golang/glog"
@@ -71,6 +72,15 @@ __kubectl_get_namespaces()
     local template kubectl_out
     template="{{ range .items  }}{{ .metadata.name }} {{ end }}"
     if kubectl_out=$(kubectl get -o template --template="${template}" namespace 2>/dev/null); then
+        COMPREPLY=( $( compgen -W "${kubectl_out[*]}" -- "$cur" ) )
+    fi
+}
+
+__kubectl_get_contexts()
+{
+    local template kubectl_out
+    template="{{ range .contexts  }}{{ .name }} {{ end }}"
+    if kubectl_out=$(kubectl config $(__kubectl_override_flags) -o template --template="${template}" view 2>/dev/null); then
         COMPREPLY=( $( compgen -W "${kubectl_out[*]}" -- "$cur" ) )
     fi
 }
@@ -172,11 +182,13 @@ __custom_func() {
 	valid_resources = `Valid resource types include:
 
     * all
-    * clusters (valid only for federation apiservers)
+    * certificatesigningrequests (aka 'csr')
     * clusterrolebindings
     * clusterroles
+    * clusters (valid only for federation apiservers)
     * componentstatuses (aka 'cs')
     * configmaps (aka 'cm')
+    * cronjobs
     * daemonsets (aka 'ds')
     * deployments (aka 'deploy')
     * endpoints (aka 'ep')
@@ -190,8 +202,8 @@ __custom_func() {
     * nodes (aka 'no')
     * persistentvolumeclaims (aka 'pvc')
     * persistentvolumes (aka 'pv')
-    * pods (aka 'po')
     * poddisruptionbudgets (aka 'pdb')
+    * pods (aka 'po')
     * podsecuritypolicies (aka 'psp')
     * podtemplates
     * replicasets (aka 'rs')
@@ -213,7 +225,7 @@ func NewKubectlCommand(f cmdutil.Factory, in io.Reader, out, err io.Writer) *cob
 	// Parent command to which all subcommands are added.
 	cmds := &cobra.Command{
 		Use:   "kubectl",
-		Short: "kubectl controls the Kubernetes cluster manager",
+		Short: i18n.T("kubectl controls the Kubernetes cluster manager"),
 		Long: templates.LongDesc(`
       kubectl controls the Kubernetes cluster manager.
 
@@ -285,6 +297,7 @@ func NewKubectlCommand(f cmdutil.Factory, in io.Reader, out, err io.Writer) *cob
 				NewCmdPortForward(f, out, err),
 				NewCmdProxy(f, out),
 				NewCmdCp(f, in, out, err),
+				auth.NewCmdAuth(f, out, err),
 			},
 		},
 		{
@@ -301,7 +314,7 @@ func NewKubectlCommand(f cmdutil.Factory, in io.Reader, out, err io.Writer) *cob
 			Commands: []*cobra.Command{
 				NewCmdLabel(f, out),
 				NewCmdAnnotate(f, out),
-				NewCmdCompletion(f, out),
+				NewCmdCompletion(f, out, ""),
 			},
 		},
 	}
@@ -320,6 +333,16 @@ func NewKubectlCommand(f cmdutil.Factory, in io.Reader, out, err io.Writer) *cob
 		cmds.Flag("namespace").Annotations[cobra.BashCompCustom] = append(
 			cmds.Flag("namespace").Annotations[cobra.BashCompCustom],
 			"__kubectl_get_namespaces",
+		)
+	}
+
+	if cmds.Flag("context") != nil {
+		if cmds.Flag("context").Annotations == nil {
+			cmds.Flag("context").Annotations = map[string][]string{}
+		}
+		cmds.Flag("context").Annotations[cobra.BashCompCustom] = append(
+			cmds.Flag("context").Annotations[cobra.BashCompCustom],
+			"__kubectl_get_contexts",
 		)
 	}
 
