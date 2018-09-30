@@ -99,8 +99,17 @@ func TestParsePortsAndNew(t *testing.T) {
 		if dialer.dialed {
 			t.Fatalf("%d: expected not dialed", i)
 		}
-		if e, a := test.expected, pf.ports; !reflect.DeepEqual(e, a) {
-			t.Fatalf("%d: ports: expected %#v, got %#v", i, e, a)
+		if _, portErr := pf.GetPorts(); portErr == nil {
+			t.Fatalf("%d: GetPorts: error expected but got nil", i)
+		}
+
+		// mock-signal the Ready channel
+		close(readyChan)
+
+		if ports, portErr := pf.GetPorts(); portErr != nil {
+			t.Fatalf("%d: GetPorts: unable to retrieve ports: %s", i, portErr)
+		} else if !reflect.DeepEqual(test.expected, ports) {
+			t.Fatalf("%d: ports: expected %#v, got %#v", i, test.expected, ports)
 		}
 		if e, a := expectedStopChan, pf.stopChan; e != a {
 			t.Fatalf("%d: stopChan: expected %#v, got %#v", i, e, a)
@@ -134,24 +143,18 @@ func TestGetListener(t *testing.T) {
 			ExpectedListenerAddress: "127.0.0.1",
 		},
 		{
-			Hostname:                "[::1]",
+			Hostname:                "::1",
 			Protocol:                "tcp6",
 			ShouldRaiseError:        false,
 			ExpectedListenerAddress: "::1",
 		},
 		{
-			Hostname:         "[::1]",
+			Hostname:         "::1",
 			Protocol:         "tcp4",
 			ShouldRaiseError: true,
 		},
 		{
 			Hostname:         "127.0.0.1",
-			Protocol:         "tcp6",
-			ShouldRaiseError: true,
-		},
-		{
-			// IPv6 address must be put into brackets. This test reveals this.
-			Hostname:         "::1",
 			Protocol:         "tcp6",
 			ShouldRaiseError: true,
 		},
@@ -182,10 +185,10 @@ func TestGetListener(t *testing.T) {
 		host, port, _ := net.SplitHostPort(listener.Addr().String())
 		t.Logf("Asked a %s forward for: %s:%v, got listener %s:%s, expected: %s", testCase.Protocol, testCase.Hostname, 12345, host, port, expectedListenerPort)
 		if host != testCase.ExpectedListenerAddress {
-			t.Errorf("Test case #%d failed: Listener does not listen on exepected address: asked %v got %v", i, testCase.ExpectedListenerAddress, host)
+			t.Errorf("Test case #%d failed: Listener does not listen on expected address: asked '%v' got '%v'", i, testCase.ExpectedListenerAddress, host)
 		}
 		if port != expectedListenerPort {
-			t.Errorf("Test case #%d failed: Listener does not listen on exepected port: asked %v got %v", i, expectedListenerPort, port)
+			t.Errorf("Test case #%d failed: Listener does not listen on expected port: asked %v got %v", i, expectedListenerPort, port)
 
 		}
 		listener.Close()

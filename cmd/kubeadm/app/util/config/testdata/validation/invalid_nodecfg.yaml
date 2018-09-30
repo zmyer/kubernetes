@@ -1,0 +1,7 @@
+apiVersion: kubeadm.k8s.io/v1alpha2
+kind: NodeConfiguration
+apiEndpoint:
+  advertiseAddress: INVALID-ADDRESS-!!!!
+  bindPort: 6443
+apiVersion: kubeadm.k8s.io/v1alpha3
+kind: JoinConfiguration

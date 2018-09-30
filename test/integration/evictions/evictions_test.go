@@ -1,5 +1,3 @@
-// +build integration,!no-etcd
-
 /*
 Copyright 2015 The Kubernetes Authors.
 
@@ -26,19 +24,20 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/api/core/v1"
+	"k8s.io/api/policy/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/informers"
+	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/apis/policy/v1beta1"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset"
-	informers "k8s.io/kubernetes/pkg/client/informers/informers_generated/externalversions"
 	"k8s.io/kubernetes/pkg/controller/disruption"
 	"k8s.io/kubernetes/test/integration/framework"
+	"reflect"
 )
 
 const (
@@ -50,8 +49,8 @@ const (
 func TestConcurrentEvictionRequests(t *testing.T) {
 	podNameFormat := "test-pod-%d"
 
-	s, rm, informers, clientSet := rmSetup(t)
-	defer s.Close()
+	s, closeFn, rm, informers, clientSet := rmSetup(t)
+	defer closeFn()
 
 	ns := framework.CreateTestingNamespace("concurrent-eviction-requests", s, t)
 	defer framework.DeleteTestingNamespace(ns, s, t)
@@ -77,12 +76,12 @@ func TestConcurrentEvictionRequests(t *testing.T) {
 		podName := fmt.Sprintf(podNameFormat, i)
 		pod := newPod(podName)
 
-		if _, err := clientSet.Core().Pods(ns.Name).Create(pod); err != nil {
+		if _, err := clientSet.CoreV1().Pods(ns.Name).Create(pod); err != nil {
 			t.Errorf("Failed to create pod: %v", err)
 		}
 
 		addPodConditionReady(pod)
-		if _, err := clientSet.Core().Pods(ns.Name).UpdateStatus(pod); err != nil {
+		if _, err := clientSet.CoreV1().Pods(ns.Name).UpdateStatus(pod); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -126,7 +125,7 @@ func TestConcurrentEvictionRequests(t *testing.T) {
 				// should not return here otherwise we would leak the pod
 			}
 
-			_, err = clientSet.Core().Pods(ns.Name).Get(podName, metav1.GetOptions{})
+			_, err = clientSet.CoreV1().Pods(ns.Name).Get(podName, metav1.GetOptions{})
 			switch {
 			case errors.IsNotFound(err):
 				atomic.AddUint32(&numberPodsEvicted, 1)
@@ -140,7 +139,7 @@ func TestConcurrentEvictionRequests(t *testing.T) {
 			}
 
 			// delete pod which still exists due to error
-			e := clientSet.Core().Pods(ns.Name).Delete(podName, deleteOption)
+			e := clientSet.CoreV1().Pods(ns.Name).Delete(podName, deleteOption)
 			if e != nil {
 				errCh <- e
 			}
@@ -163,7 +162,83 @@ func TestConcurrentEvictionRequests(t *testing.T) {
 	}
 
 	if atomic.LoadUint32(&numberPodsEvicted) != numOfEvictions {
-		t.Fatalf("fewer number of successful evictions than expected :", numberPodsEvicted)
+		t.Fatalf("fewer number of successful evictions than expected : %d", numberPodsEvicted)
+	}
+}
+
+// TestTerminalPodEviction ensures that PDB is not checked for terminal pods.
+func TestTerminalPodEviction(t *testing.T) {
+	s, closeFn, rm, informers, clientSet := rmSetup(t)
+	defer closeFn()
+
+	ns := framework.CreateTestingNamespace("terminalpod-eviction", s, t)
+	defer framework.DeleteTestingNamespace(ns, s, t)
+
+	stopCh := make(chan struct{})
+	informers.Start(stopCh)
+	go rm.Run(stopCh)
+	defer close(stopCh)
+
+	config := restclient.Config{Host: s.URL}
+	clientSet, err := clientset.NewForConfig(&config)
+	if err != nil {
+		t.Fatalf("Failed to create clientset: %v", err)
+	}
+
+	var gracePeriodSeconds int64 = 30
+	deleteOption := &metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriodSeconds,
+	}
+	pod := newPod("test-terminal-pod1")
+	if _, err := clientSet.CoreV1().Pods(ns.Name).Create(pod); err != nil {
+		t.Errorf("Failed to create pod: %v", err)
+	}
+	addPodConditionSucceeded(pod)
+	if _, err := clientSet.CoreV1().Pods(ns.Name).UpdateStatus(pod); err != nil {
+		t.Fatal(err)
+	}
+
+	waitToObservePods(t, informers.Core().V1().Pods().Informer(), 1)
+
+	pdb := newPDB()
+	if _, err := clientSet.Policy().PodDisruptionBudgets(ns.Name).Create(pdb); err != nil {
+		t.Errorf("Failed to create PodDisruptionBudget: %v", err)
+	}
+
+	pdbList, err := clientSet.Policy().PodDisruptionBudgets(ns.Name).List(metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("Error while listing pod disruption budget")
+	}
+	oldPdb := pdbList.Items[0]
+	eviction := newEviction(ns.Name, pod.Name, deleteOption)
+	err = wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+		e := clientSet.Policy().Evictions(ns.Name).Evict(eviction)
+		switch {
+		case errors.IsTooManyRequests(e):
+			return false, nil
+		case errors.IsConflict(e):
+			return false, fmt.Errorf("Unexpected Conflict (409) error caused by failing to handle concurrent PDB updates: %v", e)
+		case e == nil:
+			return true, nil
+		default:
+			return false, e
+		}
+	})
+	if err != nil {
+		t.Fatalf("Eviction of pod failed %v", err)
+	}
+	pdbList, err = clientSet.Policy().PodDisruptionBudgets(ns.Name).List(metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("Error while listing pod disruption budget")
+	}
+	newPdb := pdbList.Items[0]
+	// We shouldn't see an update in pod disruption budget status' generation number as we are evicting terminal pods without checking for pod disruption.
+	if !reflect.DeepEqual(newPdb.Status.ObservedGeneration, oldPdb.Status.ObservedGeneration) {
+		t.Fatalf("Expected the pdb generation to be of same value %v but got %v", newPdb.Status.ObservedGeneration, oldPdb.Status.ObservedGeneration)
+	}
+
+	if err := clientSet.Policy().PodDisruptionBudgets(ns.Name).Delete(pdb.Name, deleteOption); err != nil {
+		t.Fatalf("Failed to delete pod disruption budget")
 	}
 }
 
@@ -179,6 +254,18 @@ func newPod(podName string) *v1.Pod {
 					Name:  "fake-name",
 					Image: "fakeimage",
 				},
+			},
+		},
+	}
+}
+
+func addPodConditionSucceeded(pod *v1.Pod) {
+	pod.Status = v1.PodStatus{
+		Phase: v1.PodSucceeded,
+		Conditions: []v1.PodCondition{
+			{
+				Type:   v1.PodReady,
+				Status: v1.ConditionTrue,
 			},
 		},
 	}
@@ -202,7 +289,7 @@ func newPDB() *v1beta1.PodDisruptionBudget {
 			Name: "test-pdb",
 		},
 		Spec: v1beta1.PodDisruptionBudgetSpec{
-			MinAvailable: intstr.IntOrString{
+			MinAvailable: &intstr.IntOrString{
 				Type:   intstr.Int,
 				IntVal: 0,
 			},
@@ -227,9 +314,9 @@ func newEviction(ns, evictionName string, deleteOption *metav1.DeleteOptions) *v
 	}
 }
 
-func rmSetup(t *testing.T) (*httptest.Server, *disruption.DisruptionController, informers.SharedInformerFactory, clientset.Interface) {
+func rmSetup(t *testing.T) (*httptest.Server, framework.CloseFunc, *disruption.DisruptionController, informers.SharedInformerFactory, clientset.Interface) {
 	masterConfig := framework.NewIntegrationTestMasterConfig()
-	_, s := framework.RunAMaster(masterConfig)
+	_, s, closeFn := framework.RunAMaster(masterConfig)
 
 	config := restclient.Config{Host: s.URL}
 	clientSet, err := clientset.NewForConfig(&config)
@@ -248,7 +335,7 @@ func rmSetup(t *testing.T) (*httptest.Server, *disruption.DisruptionController, 
 		informers.Apps().V1beta1().StatefulSets(),
 		clientset.NewForConfigOrDie(restclient.AddUserAgent(&config, "disruption-controller")),
 	)
-	return s, rm, informers, clientSet
+	return s, closeFn, rm, informers, clientSet
 }
 
 // wait for the podInformer to observe the pods. Call this function before

@@ -25,11 +25,10 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
-	"k8s.io/kubernetes/pkg/util/exec"
-	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
 	volumeutil "k8s.io/kubernetes/pkg/volume/util"
 )
@@ -41,7 +40,11 @@ type gcePersistentDiskAttacher struct {
 
 var _ volume.Attacher = &gcePersistentDiskAttacher{}
 
+var _ volume.DeviceMounter = &gcePersistentDiskAttacher{}
+
 var _ volume.AttachableVolumePlugin = &gcePersistentDiskPlugin{}
+
+var _ volume.DeviceMountableVolumePlugin = &gcePersistentDiskPlugin{}
 
 func (plugin *gcePersistentDiskPlugin) NewAttacher() (volume.Attacher, error) {
 	gceCloud, err := getCloudProvider(plugin.host.GetCloudProvider())
@@ -55,9 +58,13 @@ func (plugin *gcePersistentDiskPlugin) NewAttacher() (volume.Attacher, error) {
 	}, nil
 }
 
+func (plugin *gcePersistentDiskPlugin) NewDeviceMounter() (volume.DeviceMounter, error) {
+	return plugin.NewAttacher()
+}
+
 func (plugin *gcePersistentDiskPlugin) GetDeviceMountRefs(deviceMountPath string) ([]string, error) {
-	mounter := plugin.host.GetMounter()
-	return mount.GetMountRefs(mounter, deviceMountPath)
+	mounter := plugin.host.GetMounter(plugin.GetPluginName())
+	return mounter.GetMountRefs(deviceMountPath)
 }
 
 // Attach checks with the GCE cloud provider if the specified volume is already
@@ -87,7 +94,7 @@ func (attacher *gcePersistentDiskAttacher) Attach(spec *volume.Spec, nodeName ty
 		// Volume is already attached to node.
 		glog.Infof("Attach operation is successful. PD %q is already attached to node %q.", pdName, nodeName)
 	} else {
-		if err := attacher.gceDisks.AttachDisk(pdName, nodeName, readOnly); err != nil {
+		if err := attacher.gceDisks.AttachDisk(pdName, nodeName, readOnly, isRegionalPD(spec)); err != nil {
 			glog.Errorf("Error attaching PD %q to node %q: %+v", pdName, nodeName, err)
 			return "", err
 		}
@@ -102,7 +109,7 @@ func (attacher *gcePersistentDiskAttacher) VolumesAreAttached(specs []*volume.Sp
 	pdNameList := []string{}
 	for _, spec := range specs {
 		volumeSource, _, err := getVolumeSource(spec)
-		// If error is occured, skip this volume and move to the next one
+		// If error is occurred, skip this volume and move to the next one
 		if err != nil {
 			glog.Errorf("Error getting volume (%q) source : %v", spec.Name(), err)
 			continue
@@ -130,7 +137,7 @@ func (attacher *gcePersistentDiskAttacher) VolumesAreAttached(specs []*volume.Sp
 	return volumesAttachedCheck, nil
 }
 
-func (attacher *gcePersistentDiskAttacher) WaitForAttach(spec *volume.Spec, devicePath string, timeout time.Duration) (string, error) {
+func (attacher *gcePersistentDiskAttacher) WaitForAttach(spec *volume.Spec, devicePath string, _ *v1.Pod, timeout time.Duration) (string, error) {
 	ticker := time.NewTicker(checkSleepDuration)
 	defer ticker.Stop()
 	timer := time.NewTimer(timeout)
@@ -158,7 +165,7 @@ func (attacher *gcePersistentDiskAttacher) WaitForAttach(spec *volume.Spec, devi
 		select {
 		case <-ticker.C:
 			glog.V(5).Infof("Checking GCE PD %q is attached.", pdName)
-			path, err := verifyDevicePath(devicePaths, sdBeforeSet)
+			path, err := verifyDevicePath(devicePaths, sdBeforeSet, pdName)
 			if err != nil {
 				// Log error, if any, and continue checking periodically. See issue #11321
 				glog.Errorf("Error verifying GCE PD (%q) is attached: %v", pdName, err)
@@ -185,7 +192,7 @@ func (attacher *gcePersistentDiskAttacher) GetDeviceMountPath(
 
 func (attacher *gcePersistentDiskAttacher) MountDevice(spec *volume.Spec, devicePath string, deviceMountPath string) error {
 	// Only mount the PD globally once.
-	mounter := attacher.host.GetMounter()
+	mounter := attacher.host.GetMounter(gcePersistentDiskPluginName)
 	notMnt, err := mounter.IsLikelyNotMountPoint(deviceMountPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -208,8 +215,8 @@ func (attacher *gcePersistentDiskAttacher) MountDevice(spec *volume.Spec, device
 		options = append(options, "ro")
 	}
 	if notMnt {
-		diskMounter := &mount.SafeFormatAndMount{Interface: mounter, Runner: exec.New()}
-		mountOptions := volume.MountOptionFromSpec(spec, options...)
+		diskMounter := volumeutil.NewSafeFormatAndMountFromHost(gcePersistentDiskPluginName, attacher.host)
+		mountOptions := volumeutil.MountOptionFromSpec(spec, options...)
 		err = diskMounter.FormatAndMount(devicePath, deviceMountPath, volumeSource.FSType, mountOptions)
 		if err != nil {
 			os.Remove(deviceMountPath)
@@ -227,6 +234,8 @@ type gcePersistentDiskDetacher struct {
 
 var _ volume.Detacher = &gcePersistentDiskDetacher{}
 
+var _ volume.DeviceUnmounter = &gcePersistentDiskDetacher{}
+
 func (plugin *gcePersistentDiskPlugin) NewDetacher() (volume.Detacher, error) {
 	gceCloud, err := getCloudProvider(plugin.host.GetCloudProvider())
 	if err != nil {
@@ -239,6 +248,10 @@ func (plugin *gcePersistentDiskPlugin) NewDetacher() (volume.Detacher, error) {
 	}, nil
 }
 
+func (plugin *gcePersistentDiskPlugin) NewDeviceUnmounter() (volume.DeviceUnmounter, error) {
+	return plugin.NewDetacher()
+}
+
 // Detach checks with the GCE cloud provider if the specified volume is already
 // attached to the specified node. If the volume is not attached, it succeeds
 // (returns nil). If it is attached, Detach issues a call to the GCE cloud
@@ -246,8 +259,8 @@ func (plugin *gcePersistentDiskPlugin) NewDetacher() (volume.Detacher, error) {
 // Callers are responsible for retrying on failure.
 // Callers are responsible for thread safety between concurrent attach and detach
 // operations.
-func (detacher *gcePersistentDiskDetacher) Detach(deviceMountPath string, nodeName types.NodeName) error {
-	pdName := path.Base(deviceMountPath)
+func (detacher *gcePersistentDiskDetacher) Detach(volumeName string, nodeName types.NodeName) error {
+	pdName := path.Base(volumeName)
 
 	attached, err := detacher.gceDisks.DiskIsAttached(pdName, nodeName)
 	if err != nil {
@@ -272,5 +285,5 @@ func (detacher *gcePersistentDiskDetacher) Detach(deviceMountPath string, nodeNa
 }
 
 func (detacher *gcePersistentDiskDetacher) UnmountDevice(deviceMountPath string) error {
-	return volumeutil.UnmountPath(deviceMountPath, detacher.host.GetMounter())
+	return volumeutil.UnmountPath(deviceMountPath, detacher.host.GetMounter(gcePersistentDiskPluginName))
 }

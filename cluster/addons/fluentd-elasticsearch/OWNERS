@@ -1,6 +1,8 @@
 approvers:
-- crassirostris
+- coffeepac
 - piosz
 reviewers:
-- crassirostris
+- coffeepac
 - piosz
+labels:
+- sig/instrumentation

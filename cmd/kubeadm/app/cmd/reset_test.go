@@ -17,19 +17,24 @@ limitations under the License.
 package cmd
 
 import (
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
 
+	kubeadmapiv1alpha3 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1alpha3"
+	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/validation"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/preflight"
+	"k8s.io/utils/exec"
+	fakeexec "k8s.io/utils/exec/testing"
 )
 
 func assertExists(t *testing.T, path string) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		t.Errorf("file/dir does not exist error: %s", err)
-		t.Errorf("file/dir does not exist: %s", path)
+		t.Errorf("file/directory does not exist; error: %s", err)
+		t.Errorf("file/directory does not exist: %s", path)
 	}
 }
 
@@ -48,8 +53,24 @@ func assertDirEmpty(t *testing.T, path string) {
 	}
 }
 
+func TestNewReset(t *testing.T) {
+	var in io.Reader
+	certsDir := kubeadmapiv1alpha3.DefaultCertificatesDir
+	criSocketPath := kubeadmapiv1alpha3.DefaultCRISocket
+	forceReset := true
+
+	ignorePreflightErrors := []string{"all"}
+	ignorePreflightErrorsSet, _ := validation.ValidateIgnorePreflightErrors(ignorePreflightErrors)
+	NewReset(in, ignorePreflightErrorsSet, forceReset, certsDir, criSocketPath)
+
+	ignorePreflightErrors = []string{}
+	ignorePreflightErrorsSet, _ = validation.ValidateIgnorePreflightErrors(ignorePreflightErrors)
+	NewReset(in, ignorePreflightErrorsSet, forceReset, certsDir, criSocketPath)
+}
+
 func TestConfigDirCleaner(t *testing.T) {
 	tests := map[string]struct {
+		resetDir        string
 		setupDirs       []string
 		setupFiles      []string
 		verifyExists    []string
@@ -87,7 +108,7 @@ func TestConfigDirCleaner(t *testing.T) {
 				"manifests",
 			},
 		},
-		"preserve cloud-config": {
+		"preserve unrelated file foo": {
 			setupDirs: []string{
 				"manifests",
 				"pki",
@@ -98,12 +119,12 @@ func TestConfigDirCleaner(t *testing.T) {
 				"pki/ca.pem",
 				kubeadmconstants.AdminKubeConfigFileName,
 				kubeadmconstants.KubeletKubeConfigFileName,
-				"cloud-config",
+				"foo",
 			},
 			verifyExists: []string{
 				"manifests",
 				"pki",
-				"cloud-config",
+				"foo",
 			},
 		},
 		"preserve hidden files and directories": {
@@ -118,13 +139,11 @@ func TestConfigDirCleaner(t *testing.T) {
 				"pki/ca.pem",
 				kubeadmconstants.AdminKubeConfigFileName,
 				kubeadmconstants.KubeletKubeConfigFileName,
-				".cloud-config",
 				".mydir/.myfile",
 			},
 			verifyExists: []string{
 				"manifests",
 				"pki",
-				".cloud-config",
 				".mydir",
 				".mydir/.myfile",
 			},
@@ -135,6 +154,12 @@ func TestConfigDirCleaner(t *testing.T) {
 				"manifests",
 			},
 		},
+		"not a directory": {
+			resetDir: "test-path",
+			setupFiles: []string{
+				"test-path",
+			},
+		},
 	}
 
 	for name, test := range tests {
@@ -143,9 +168,8 @@ func TestConfigDirCleaner(t *testing.T) {
 		// Create a temporary directory for our fake config dir:
 		tmpDir, err := ioutil.TempDir("", "kubeadm-reset-test")
 		if err != nil {
-			t.Errorf("Unable to create temp directory: %s", err)
+			t.Errorf("Unable to create temporary directory: %s", err)
 		}
-		defer os.RemoveAll(tmpDir)
 
 		for _, createDir := range test.setupDirs {
 			err := os.Mkdir(filepath.Join(tmpDir, createDir), 0700)
@@ -160,10 +184,13 @@ func TestConfigDirCleaner(t *testing.T) {
 			if err != nil {
 				t.Errorf("Unable to create test file: %s", err)
 			}
-			defer f.Close()
+			f.Close()
 		}
 
-		resetConfigDir(tmpDir, filepath.Join(tmpDir, "pki"))
+		if test.resetDir == "" {
+			test.resetDir = "pki"
+		}
+		resetConfigDir(tmpDir, filepath.Join(tmpDir, test.resetDir))
 
 		// Verify the files we cleanup implicitly in every test:
 		assertExists(t, tmpDir)
@@ -179,5 +206,31 @@ func TestConfigDirCleaner(t *testing.T) {
 		for _, path := range test.verifyNotExists {
 			assertNotExists(t, filepath.Join(tmpDir, path))
 		}
+
+		os.RemoveAll(tmpDir)
 	}
+}
+
+func TestRemoveContainers(t *testing.T) {
+	fcmd := fakeexec.FakeCmd{
+		CombinedOutputScript: []fakeexec.FakeCombinedOutputAction{
+			func() ([]byte, error) { return []byte("id1\nid2"), nil },
+			func() ([]byte, error) { return []byte(""), nil },
+			func() ([]byte, error) { return []byte(""), nil },
+			func() ([]byte, error) { return []byte(""), nil },
+			func() ([]byte, error) { return []byte(""), nil },
+		},
+	}
+	fexec := fakeexec.FakeExec{
+		CommandScript: []fakeexec.FakeCommandAction{
+			func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
+			func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
+			func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
+			func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
+			func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
+		},
+		LookPathFunc: func(cmd string) (string, error) { return "/usr/bin/crictl", nil },
+	}
+
+	removeContainers(&fexec, "unix:///var/run/crio/crio.sock")
 }

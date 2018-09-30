@@ -17,9 +17,10 @@ limitations under the License.
 package securitycontext
 
 import (
+	"reflect"
 	"testing"
 
-	"k8s.io/kubernetes/pkg/api/v1"
+	"k8s.io/api/core/v1"
 )
 
 func TestParseSELinuxOptions(t *testing.T) {
@@ -84,95 +85,100 @@ func compareContexts(name string, ex, ac *v1.SELinuxOptions, t *testing.T) {
 	}
 }
 
-func containerWithUser(ptr *int64) *v1.Container {
-	return &v1.Container{SecurityContext: &v1.SecurityContext{RunAsUser: ptr}}
-}
-
-func TestHaRootUID(t *testing.T) {
-	var nonRoot int64 = 1
-	var root int64 = 0
+func TestAddNoNewPrivileges(t *testing.T) {
+	pfalse := false
+	ptrue := true
 
 	tests := map[string]struct {
-		container *v1.Container
-		expect    bool
+		sc     *v1.SecurityContext
+		expect bool
 	}{
-		"nil sc": {
-			container: &v1.Container{SecurityContext: nil},
+		"allowPrivilegeEscalation nil security context nil": {
+			sc:     nil,
+			expect: false,
 		},
-		"nil runAsuser": {
-			container: containerWithUser(nil),
+		"allowPrivilegeEscalation nil": {
+			sc: &v1.SecurityContext{
+				AllowPrivilegeEscalation: nil,
+			},
+			expect: false,
 		},
-		"runAsUser non-root": {
-			container: containerWithUser(&nonRoot),
+		"allowPrivilegeEscalation false": {
+			sc: &v1.SecurityContext{
+				AllowPrivilegeEscalation: &pfalse,
+			},
+			expect: true,
 		},
-		"runAsUser root": {
-			container: containerWithUser(&root),
-			expect:    true,
+		"allowPrivilegeEscalation true": {
+			sc: &v1.SecurityContext{
+				AllowPrivilegeEscalation: &ptrue,
+			},
+			expect: false,
 		},
 	}
 
 	for k, v := range tests {
-		actual := HasRootUID(v.container)
+		actual := AddNoNewPrivileges(v.sc)
 		if actual != v.expect {
 			t.Errorf("%s failed, expected %t but received %t", k, v.expect, actual)
 		}
 	}
 }
 
-func TestHasRunAsUser(t *testing.T) {
-	var runAsUser int64 = 0
-
+func TestConvertToRuntimeMaskedPaths(t *testing.T) {
+	dPM := v1.DefaultProcMount
+	uPM := v1.UnmaskedProcMount
 	tests := map[string]struct {
-		container *v1.Container
-		expect    bool
+		pm     *v1.ProcMountType
+		expect []string
 	}{
-		"nil sc": {
-			container: &v1.Container{SecurityContext: nil},
+		"procMount nil": {
+			pm:     nil,
+			expect: defaultMaskedPaths,
 		},
-		"nil runAsUser": {
-			container: containerWithUser(nil),
+		"procMount default": {
+			pm:     &dPM,
+			expect: defaultMaskedPaths,
 		},
-		"valid runAsUser": {
-			container: containerWithUser(&runAsUser),
-			expect:    true,
+		"procMount unmasked": {
+			pm:     &uPM,
+			expect: []string{},
 		},
 	}
 
 	for k, v := range tests {
-		actual := HasRunAsUser(v.container)
-		if actual != v.expect {
-			t.Errorf("%s failed, expected %t but received %t", k, v.expect, actual)
+		actual := ConvertToRuntimeMaskedPaths(v.pm)
+		if !reflect.DeepEqual(actual, v.expect) {
+			t.Errorf("%s failed, expected %#v but received %#v", k, v.expect, actual)
 		}
 	}
 }
 
-func TestHasRootRunAsUser(t *testing.T) {
-	var nonRoot int64 = 1
-	var root int64 = 0
-
+func TestConvertToRuntimeReadonlyPaths(t *testing.T) {
+	dPM := v1.DefaultProcMount
+	uPM := v1.UnmaskedProcMount
 	tests := map[string]struct {
-		container *v1.Container
-		expect    bool
+		pm     *v1.ProcMountType
+		expect []string
 	}{
-		"nil sc": {
-			container: &v1.Container{SecurityContext: nil},
+		"procMount nil": {
+			pm:     nil,
+			expect: defaultReadonlyPaths,
 		},
-		"nil runAsuser": {
-			container: containerWithUser(nil),
+		"procMount default": {
+			pm:     &dPM,
+			expect: defaultReadonlyPaths,
 		},
-		"runAsUser non-root": {
-			container: containerWithUser(&nonRoot),
-		},
-		"runAsUser root": {
-			container: containerWithUser(&root),
-			expect:    true,
+		"procMount unmasked": {
+			pm:     &uPM,
+			expect: []string{},
 		},
 	}
 
 	for k, v := range tests {
-		actual := HasRootRunAsUser(v.container)
-		if actual != v.expect {
-			t.Errorf("%s failed, expected %t but received %t", k, v.expect, actual)
+		actual := ConvertToRuntimeReadonlyPaths(v.pm)
+		if !reflect.DeepEqual(actual, v.expect) {
+			t.Errorf("%s failed, expected %#v but received %#v", k, v.expect, actual)
 		}
 	}
 }

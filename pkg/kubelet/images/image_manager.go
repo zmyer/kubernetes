@@ -21,9 +21,9 @@ import (
 
 	dockerref "github.com/docker/distribution/reference"
 	"github.com/golang/glog"
+	"k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/flowcontrol"
-	"k8s.io/kubernetes/pkg/api/v1"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	"k8s.io/kubernetes/pkg/util/parsers"
@@ -40,6 +40,7 @@ type imageManager struct {
 
 var _ ImageManager = &imageManager{}
 
+// NewImageManager instantiates a new ImageManager object.
 func NewImageManager(recorder record.EventRecorder, imageService kubecontainer.ImageService, imageBackOff *flowcontrol.Backoff, serialized bool, qps float32, burst int) ImageManager {
 	imageService = throttleImagePulling(imageService, qps, burst)
 
@@ -75,7 +76,7 @@ func shouldPullImage(container *v1.Container, imagePresent bool) bool {
 // records an event using ref, event msg.  log to glog using prefix, msg, logFn
 func (m *imageManager) logIt(ref *v1.ObjectReference, eventtype, event, prefix, msg string, logFn func(args ...interface{})) {
 	if ref != nil {
-		m.recorder.Event(events.ToObjectReference(ref), eventtype, event, msg)
+		m.recorder.Event(ref, eventtype, event, msg)
 	} else {
 		logFn(fmt.Sprint(prefix, " ", msg))
 	}
@@ -112,11 +113,10 @@ func (m *imageManager) EnsureImageExists(pod *v1.Pod, container *v1.Container, p
 			msg := fmt.Sprintf("Container image %q already present on machine", container.Image)
 			m.logIt(ref, v1.EventTypeNormal, events.PulledImage, logPrefix, msg, glog.Info)
 			return imageRef, "", nil
-		} else {
-			msg := fmt.Sprintf("Container image %q is not present with pull policy of Never", container.Image)
-			m.logIt(ref, v1.EventTypeWarning, events.ErrImageNeverPullPolicy, logPrefix, msg, glog.Warning)
-			return "", msg, ErrImageNeverPull
 		}
+		msg := fmt.Sprintf("Container image %q is not present with pull policy of Never", container.Image)
+		m.logIt(ref, v1.EventTypeWarning, events.ErrImageNeverPullPolicy, logPrefix, msg, glog.Warning)
+		return "", msg, ErrImageNeverPull
 	}
 
 	backOffKey := fmt.Sprintf("%s_%s", pod.UID, container.Image)
@@ -132,7 +132,7 @@ func (m *imageManager) EnsureImageExists(pod *v1.Pod, container *v1.Container, p
 	if imagePullResult.err != nil {
 		m.logIt(ref, v1.EventTypeWarning, events.FailedToPullImage, logPrefix, fmt.Sprintf("Failed to pull image %q: %v", container.Image, imagePullResult.err), glog.Warning)
 		m.backOff.Next(backOffKey, m.backOff.Clock.Now())
-		if imagePullResult.err == RegistryUnavailable {
+		if imagePullResult.err == ErrRegistryUnavailable {
 			msg := fmt.Sprintf("image pull failed for %s because the registry is unavailable.", container.Image)
 			return "", msg, imagePullResult.err
 		}
@@ -147,18 +147,19 @@ func (m *imageManager) EnsureImageExists(pod *v1.Pod, container *v1.Container, p
 // applyDefaultImageTag parses a docker image string, if it doesn't contain any tag or digest,
 // a default tag will be applied.
 func applyDefaultImageTag(image string) (string, error) {
-	named, err := dockerref.ParseNamed(image)
+	named, err := dockerref.ParseNormalizedNamed(image)
 	if err != nil {
 		return "", fmt.Errorf("couldn't parse image reference %q: %v", image, err)
 	}
 	_, isTagged := named.(dockerref.Tagged)
 	_, isDigested := named.(dockerref.Digested)
 	if !isTagged && !isDigested {
-		named, err := dockerref.WithTag(named, parsers.DefaultImageTag)
-		if err != nil {
-			return "", fmt.Errorf("failed to apply default image tag %q: %v", image, err)
-		}
-		image = named.String()
+		// we just concatenate the image name with the default tag here instead
+		// of using dockerref.WithTag(named, ...) because that would cause the
+		// image to be fully qualified as docker.io/$name if it's a short name
+		// (e.g. just busybox). We don't want that to happen to keep the CRI
+		// agnostic wrt image names and default hostnames.
+		image = image + ":" + parsers.DefaultImageTag
 	}
 	return image, nil
 }

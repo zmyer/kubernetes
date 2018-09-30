@@ -1,7 +1,7 @@
 restart:
   description: Restart the Kubernetes master services on demand.
 create-rbd-pv:
-  description: Create RADOS Block Device (RDB) volume in Ceph and creates PersistentVolume.
+  description: Create RADOS Block Device (RDB) volume in Ceph and creates PersistentVolume. Note this is deprecated on Kubernetes >= 1.10 in favor of CSI, where PersistentVolumes are created dynamically to back PersistentVolumeClaims.
   params:
     name:
       type: string
@@ -26,3 +26,25 @@ create-rbd-pv:
   required:
     - name
     - size
+namespace-list:
+  description: List existing k8s namespaces
+namespace-create:
+  description: Create new namespace
+  params:
+    name:
+      type: string
+      description: Namespace name eg. staging
+      minLength: 2
+  required:
+    - name
+namespace-delete:
+  description: Delete namespace
+  params:
+    name:
+      type: string
+      description: Namespace name eg. staging
+      minLength: 2
+  required:
+    - name
+upgrade:
+    description: Upgrade the kubernetes snaps

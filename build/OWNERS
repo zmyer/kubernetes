@@ -1,13 +1,14 @@
 reviewers:
+  - cblecker
   - ixdy
   - jbeda
   - lavalamp
+  - spiffxp
   - zmerlynn
-  - spxtr
 approvers:
+  - cblecker
   - ixdy
   - jbeda
   - lavalamp
   - zmerlynn
   - mikedanese
-  - spxtr

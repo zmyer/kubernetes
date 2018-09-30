@@ -19,8 +19,8 @@ package images
 import (
 	"fmt"
 
+	"k8s.io/api/core/v1"
 	"k8s.io/client-go/util/flowcontrol"
-	"k8s.io/kubernetes/pkg/api/v1"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 )
 
@@ -46,5 +46,5 @@ func (ts throttledImageService) PullImage(image kubecontainer.ImageSpec, secrets
 	if ts.limiter.TryAccept() {
 		return ts.ImageService.PullImage(image, secrets)
 	}
-	return "", fmt.Errorf("pull QPS exceeded.")
+	return "", fmt.Errorf("pull QPS exceeded")
 }

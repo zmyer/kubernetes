@@ -21,12 +21,16 @@ import (
 	"time"
 
 	"github.com/golang/glog"
+
+	"k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/informers"
+	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/kubernetes/pkg/api/v1"
-	"k8s.io/kubernetes/pkg/client/clientset_generated/clientset/fake"
-	informers "k8s.io/kubernetes/pkg/client/informers/informers_generated/externalversions"
 	"k8s.io/kubernetes/pkg/controller"
 )
 
@@ -89,74 +93,6 @@ func TestControllerSync(t *testing.T) {
 				return nil
 			},
 		},
-		{
-			// addVolume with provisioned volume from Kubernetes 1.2. No "action"
-			// is expected - it should stay bound.
-			"5-5 - add bound volume from 1.2",
-			novolumes,
-			[]*v1.PersistentVolume{addVolumeAnnotation(newVolume("volume5-5", "1Gi", "uid5-5", "claim5-5", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty), pvProvisioningRequiredAnnotationKey, pvProvisioningCompletedAnnotationValue)},
-			newClaimArray("claim5-5", "uid5-5", "1Gi", "", v1.ClaimPending, nil),
-			newClaimArray("claim5-5", "uid5-5", "1Gi", "volume5-5", v1.ClaimBound, nil, annBindCompleted, annBoundByController),
-			noevents, noerrors,
-			// Custom test function that generates a add event
-			func(ctrl *PersistentVolumeController, reactor *volumeReactor, test controllerTest) error {
-				volume := newVolume("volume5-5", "1Gi", "uid5-5", "claim5-5", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty)
-				volume = addVolumeAnnotation(volume, pvProvisioningRequiredAnnotationKey, pvProvisioningCompletedAnnotationValue)
-				reactor.addVolumeEvent(volume)
-				return nil
-			},
-		},
-		{
-			// updateVolume with provisioned volume from Kubernetes 1.2. No
-			// "action" is expected - it should stay bound.
-			"5-6 - update bound volume from 1.2",
-			[]*v1.PersistentVolume{addVolumeAnnotation(newVolume("volume5-6", "1Gi", "uid5-6", "claim5-6", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty), pvProvisioningRequiredAnnotationKey, pvProvisioningCompletedAnnotationValue)},
-			[]*v1.PersistentVolume{addVolumeAnnotation(newVolume("volume5-6", "1Gi", "uid5-6", "claim5-6", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty), pvProvisioningRequiredAnnotationKey, pvProvisioningCompletedAnnotationValue)},
-			newClaimArray("claim5-6", "uid5-6", "1Gi", "volume5-6", v1.ClaimBound, nil),
-			newClaimArray("claim5-6", "uid5-6", "1Gi", "volume5-6", v1.ClaimBound, nil, annBindCompleted),
-			noevents, noerrors,
-			// Custom test function that generates a add event
-			func(ctrl *PersistentVolumeController, reactor *volumeReactor, test controllerTest) error {
-				volume := newVolume("volume5-6", "1Gi", "uid5-6", "claim5-6", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty)
-				volume = addVolumeAnnotation(volume, pvProvisioningRequiredAnnotationKey, pvProvisioningCompletedAnnotationValue)
-				reactor.modifyVolumeEvent(volume)
-				return nil
-			},
-		},
-		{
-			// addVolume with unprovisioned volume from Kubernetes 1.2. The
-			// volume should be deleted.
-			"5-7 - add unprovisioned volume from 1.2",
-			novolumes,
-			novolumes,
-			newClaimArray("claim5-7", "uid5-7", "1Gi", "", v1.ClaimPending, nil),
-			newClaimArray("claim5-7", "uid5-7", "1Gi", "", v1.ClaimPending, nil),
-			noevents, noerrors,
-			// Custom test function that generates a add event
-			func(ctrl *PersistentVolumeController, reactor *volumeReactor, test controllerTest) error {
-				volume := newVolume("volume5-7", "1Gi", "uid5-7", "claim5-7", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty)
-				volume = addVolumeAnnotation(volume, pvProvisioningRequiredAnnotationKey, "yes")
-				reactor.addVolumeEvent(volume)
-				return nil
-			},
-		},
-		{
-			// updateVolume with unprovisioned volume from Kubernetes 1.2. The
-			// volume should be deleted.
-			"5-8 - update bound volume from 1.2",
-			novolumes,
-			novolumes,
-			newClaimArray("claim5-8", "uid5-8", "1Gi", "", v1.ClaimPending, nil),
-			newClaimArray("claim5-8", "uid5-8", "1Gi", "", v1.ClaimPending, nil),
-			noevents, noerrors,
-			// Custom test function that generates a add event
-			func(ctrl *PersistentVolumeController, reactor *volumeReactor, test controllerTest) error {
-				volume := newVolume("volume5-8", "1Gi", "uid5-8", "claim5-8", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty)
-				volume = addVolumeAnnotation(volume, pvProvisioningRequiredAnnotationKey, "yes")
-				reactor.modifyVolumeEvent(volume)
-				return nil
-			},
-		},
 	}
 
 	for _, test := range tests {
@@ -172,7 +108,10 @@ func TestControllerSync(t *testing.T) {
 		client.PrependWatchReactor("storageclasses", core.DefaultWatchReactor(watch.NewFake(), nil))
 
 		informers := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
-		ctrl := newTestController(client, informers, true)
+		ctrl, err := newTestController(client, informers, true)
+		if err != nil {
+			t.Fatalf("Test %q construct persistent volume failed: %v", test.name, err)
+		}
 
 		reactor := newVolumeReactor(client, ctrl, fakeVolumeWatch, fakeClaimWatch, test.errors)
 		for _, claim := range test.initialClaims {
@@ -204,14 +143,13 @@ func TestControllerSync(t *testing.T) {
 		glog.V(4).Infof("controller synced, starting test")
 
 		// Call the tested function
-		err := test.test(ctrl, reactor, test)
+		err = test.test(ctrl, reactor, test)
 		if err != nil {
 			t.Errorf("Test %q initial test call failed: %v", test.name, err)
 		}
 		// Simulate a periodic resync, just in case some events arrived in a
 		// wrong order.
-		ctrl.claims.Resync()
-		ctrl.volumes.store.Resync()
+		ctrl.resync()
 
 		err = reactor.waitTest(test)
 		if err != nil {
@@ -297,4 +235,120 @@ func addVolumeAnnotation(volume *v1.PersistentVolume, annName, annValue string) 
 	}
 	volume.Annotations[annName] = annValue
 	return volume
+}
+
+func makePVCClass(scName *string, hasSelectNodeAnno bool) *v1.PersistentVolumeClaim {
+	claim := &v1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{},
+		},
+		Spec: v1.PersistentVolumeClaimSpec{
+			StorageClassName: scName,
+		},
+	}
+
+	if hasSelectNodeAnno {
+		claim.Annotations[annSelectedNode] = "node-name"
+	}
+
+	return claim
+}
+
+func makeStorageClass(scName string, mode *storagev1.VolumeBindingMode) *storagev1.StorageClass {
+	return &storagev1.StorageClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: scName,
+		},
+		VolumeBindingMode: mode,
+	}
+}
+
+func TestDelayBinding(t *testing.T) {
+	var (
+		classNotHere       = "not-here"
+		classNoMode        = "no-mode"
+		classImmediateMode = "immediate-mode"
+		classWaitMode      = "wait-mode"
+
+		modeImmediate = storagev1.VolumeBindingImmediate
+		modeWait      = storagev1.VolumeBindingWaitForFirstConsumer
+	)
+
+	tests := map[string]struct {
+		pvc         *v1.PersistentVolumeClaim
+		shouldDelay bool
+		shouldFail  bool
+	}{
+		"nil-class": {
+			pvc:         makePVCClass(nil, false),
+			shouldDelay: false,
+		},
+		"class-not-found": {
+			pvc:         makePVCClass(&classNotHere, false),
+			shouldDelay: false,
+		},
+		"no-mode-class": {
+			pvc:         makePVCClass(&classNoMode, false),
+			shouldDelay: false,
+			shouldFail:  true,
+		},
+		"immediate-mode-class": {
+			pvc:         makePVCClass(&classImmediateMode, false),
+			shouldDelay: false,
+		},
+		"wait-mode-class": {
+			pvc:         makePVCClass(&classWaitMode, false),
+			shouldDelay: true,
+		},
+		"wait-mode-class-with-selectedNode": {
+			pvc:         makePVCClass(&classWaitMode, true),
+			shouldDelay: false,
+		},
+	}
+
+	classes := []*storagev1.StorageClass{
+		makeStorageClass(classNoMode, nil),
+		makeStorageClass(classImmediateMode, &modeImmediate),
+		makeStorageClass(classWaitMode, &modeWait),
+	}
+
+	client := &fake.Clientset{}
+	informerFactory := informers.NewSharedInformerFactory(client, controller.NoResyncPeriodFunc())
+	classInformer := informerFactory.Storage().V1().StorageClasses()
+	ctrl := &PersistentVolumeController{
+		classLister: classInformer.Lister(),
+	}
+
+	for _, class := range classes {
+		if err := classInformer.Informer().GetIndexer().Add(class); err != nil {
+			t.Fatalf("Failed to add storage class %q: %v", class.Name, err)
+		}
+	}
+
+	// When volumeScheduling feature gate is disabled, should always be delayed
+	name := "volumeScheduling-feature-disabled"
+	shouldDelay, err := ctrl.shouldDelayBinding(makePVCClass(&classWaitMode, false))
+	if err != nil {
+		t.Errorf("Test %q returned error: %v", name, err)
+	}
+	if shouldDelay {
+		t.Errorf("Test %q returned true, expected false", name)
+	}
+
+	// Enable volumeScheduling feature gate
+	utilfeature.DefaultFeatureGate.Set("VolumeScheduling=true")
+	defer utilfeature.DefaultFeatureGate.Set("VolumeScheduling=false")
+
+	for name, test := range tests {
+		shouldDelay, err = ctrl.shouldDelayBinding(test.pvc)
+		if err != nil && !test.shouldFail {
+			t.Errorf("Test %q returned error: %v", name, err)
+		}
+		if err == nil && test.shouldFail {
+			t.Errorf("Test %q returned success, expected error", name)
+		}
+		if shouldDelay != test.shouldDelay {
+			t.Errorf("Test %q returned unexpected %v", name, test.shouldDelay)
+		}
+	}
 }

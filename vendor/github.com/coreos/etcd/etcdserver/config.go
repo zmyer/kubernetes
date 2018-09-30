@@ -16,10 +16,12 @@ package etcdserver
 
 import (
 	"fmt"
-	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/net/context"
 
 	"github.com/coreos/etcd/pkg/netutil"
 	"github.com/coreos/etcd/pkg/transport"
@@ -46,25 +48,63 @@ type ServerConfig struct {
 	ForceNewCluster     bool
 	PeerTLSInfo         transport.TLSInfo
 
-	TickMs           uint
-	ElectionTicks    int
+	TickMs        uint
+	ElectionTicks int
+
+	// InitialElectionTickAdvance is true, then local member fast-forwards
+	// election ticks to speed up "initial" leader election trigger. This
+	// benefits the case of larger election ticks. For instance, cross
+	// datacenter deployment may require longer election timeout of 10-second.
+	// If true, local node does not need wait up to 10-second. Instead,
+	// forwards its election ticks to 8-second, and have only 2-second left
+	// before leader election.
+	//
+	// Major assumptions are that:
+	//  - cluster has no active leader thus advancing ticks enables faster
+	//    leader election, or
+	//  - cluster already has an established leader, and rejoining follower
+	//    is likely to receive heartbeats from the leader after tick advance
+	//    and before election timeout.
+	//
+	// However, when network from leader to rejoining follower is congested,
+	// and the follower does not receive leader heartbeat within left election
+	// ticks, disruptive election has to happen thus affecting cluster
+	// availabilities.
+	//
+	// Disabling this would slow down initial bootstrap process for cross
+	// datacenter deployments. Make your own tradeoffs by configuring
+	// --initial-election-tick-advance at the cost of slow initial bootstrap.
+	//
+	// If single-node, it advances ticks regardless.
+	//
+	// See https://github.com/coreos/etcd/issues/9333 for more detail.
+	InitialElectionTickAdvance bool
+
 	BootstrapTimeout time.Duration
 
 	AutoCompactionRetention int
 	QuotaBackendBytes       int64
 
-	StrictReconfigCheck bool
+	// MaxRequestBytes is the maximum request size to send over raft.
+	MaxRequestBytes uint
 
-	EnablePprof bool
+	StrictReconfigCheck bool
 
 	// ClientCertAuthEnabled is true when cert has been signed by the client CA.
 	ClientCertAuthEnabled bool
+
+	AuthToken string
+
+	Debug bool
 }
 
 // VerifyBootstrap sanity-checks the initial config for bootstrap case
 // and returns an error for things that should never happen.
 func (c *ServerConfig) VerifyBootstrap() error {
-	if err := c.verifyLocalMember(true); err != nil {
+	if err := c.hasLocalMember(); err != nil {
+		return err
+	}
+	if err := c.advertiseMatchesCluster(); err != nil {
 		return err
 	}
 	if checkDuplicateURL(c.InitialPeerURLsMap) {
@@ -79,10 +119,9 @@ func (c *ServerConfig) VerifyBootstrap() error {
 // VerifyJoinExisting sanity-checks the initial config for join existing cluster
 // case and returns an error for things that should never happen.
 func (c *ServerConfig) VerifyJoinExisting() error {
-	// no need for strict checking since the member have announced its
-	// peer urls to the cluster before starting and do not have to set
-	// it in the configuration again.
-	if err := c.verifyLocalMember(false); err != nil {
+	// The member has announced its peer urls to the cluster before starting; no need to
+	// set the configuration again.
+	if err := c.hasLocalMember(); err != nil {
 		return err
 	}
 	if checkDuplicateURL(c.InitialPeerURLsMap) {
@@ -94,39 +133,38 @@ func (c *ServerConfig) VerifyJoinExisting() error {
 	return nil
 }
 
-// verifyLocalMember verifies the configured member is in configured
-// cluster. If strict is set, it also verifies the configured member
-// has the same peer urls as configured advertised peer urls.
-func (c *ServerConfig) verifyLocalMember(strict bool) error {
-	urls := c.InitialPeerURLsMap[c.Name]
-	// Make sure the cluster at least contains the local server.
-	if urls == nil {
+// hasLocalMember checks that the cluster at least contains the local server.
+func (c *ServerConfig) hasLocalMember() error {
+	if urls := c.InitialPeerURLsMap[c.Name]; urls == nil {
 		return fmt.Errorf("couldn't find local name %q in the initial cluster configuration", c.Name)
-	}
-
-	// Advertised peer URLs must match those in the cluster peer list
-	apurls := c.PeerURLs.StringSlice()
-	sort.Strings(apurls)
-	urls.Sort()
-	if strict {
-		if !netutil.URLStringsEqual(apurls, urls.StringSlice()) {
-			umap := map[string]types.URLs{c.Name: c.PeerURLs}
-			return fmt.Errorf("--initial-cluster must include %s given --initial-advertise-peer-urls=%s", types.URLsMap(umap).String(), strings.Join(apurls, ","))
-		}
 	}
 	return nil
 }
 
-func (c *ServerConfig) MemberDir() string { return path.Join(c.DataDir, "member") }
+// advertiseMatchesCluster confirms peer URLs match those in the cluster peer list.
+func (c *ServerConfig) advertiseMatchesCluster() error {
+	urls, apurls := c.InitialPeerURLsMap[c.Name], c.PeerURLs.StringSlice()
+	urls.Sort()
+	sort.Strings(apurls)
+	ctx, cancel := context.WithTimeout(context.TODO(), 30*time.Second)
+	defer cancel()
+	if !netutil.URLStringsEqual(ctx, apurls, urls.StringSlice()) {
+		umap := map[string]types.URLs{c.Name: c.PeerURLs}
+		return fmt.Errorf("--initial-cluster must include %s given --initial-advertise-peer-urls=%s", types.URLsMap(umap).String(), strings.Join(apurls, ","))
+	}
+	return nil
+}
+
+func (c *ServerConfig) MemberDir() string { return filepath.Join(c.DataDir, "member") }
 
 func (c *ServerConfig) WALDir() string {
 	if c.DedicatedWALDir != "" {
 		return c.DedicatedWALDir
 	}
-	return path.Join(c.MemberDir(), "wal")
+	return filepath.Join(c.MemberDir(), "wal")
 }
 
-func (c *ServerConfig) SnapDir() string { return path.Join(c.MemberDir(), "snap") }
+func (c *ServerConfig) SnapDir() string { return filepath.Join(c.MemberDir(), "snap") }
 
 func (c *ServerConfig) ShouldDiscover() bool { return c.DiscoveryURL != "" }
 
@@ -197,3 +235,5 @@ func (c *ServerConfig) bootstrapTimeout() time.Duration {
 	}
 	return time.Second
 }
+
+func (c *ServerConfig) backendPath() string { return filepath.Join(c.SnapDir(), "db") }

@@ -111,6 +111,20 @@ func TestRequestHeader(t *testing.T) {
 			},
 			expectedOk: true,
 		},
+		"groups case-insensitive": {
+			nameHeaders:  []string{"X-REMOTE-User"},
+			groupHeaders: []string{"X-REMOTE-Group"},
+			requestHeaders: http.Header{
+				"X-Remote-User":  {"Bob"},
+				"X-Remote-Group": {"Users"},
+			},
+			expectedUser: &user.DefaultInfo{
+				Name:   "Bob",
+				Groups: []string{"Users"},
+				Extra:  map[string][]string{},
+			},
+			expectedOk: true,
+		},
 
 		"extra prefix matches case-insensitive": {
 			nameHeaders:        []string{"X-Remote-User"},
@@ -134,6 +148,37 @@ func TestRequestHeader(t *testing.T) {
 					"key1": {"alfa", "bravo", "echo", "foxtrot"},
 					"key2": {"charlie", "delta", "golf", "hotel"},
 					"":     {"india", "juliet", "kilo", "lima"},
+				},
+			},
+			expectedOk: true,
+		},
+
+		"escaped extra keys": {
+			nameHeaders:        []string{"X-Remote-User"},
+			groupHeaders:       []string{"X-Remote-Group"},
+			extraPrefixHeaders: []string{"X-Remote-Extra-"},
+			requestHeaders: http.Header{
+				"X-Remote-User":                                            {"Bob"},
+				"X-Remote-Group":                                           {"one-a", "one-b"},
+				"X-Remote-Extra-Alpha":                                     {"alphabetical"},
+				"X-Remote-Extra-Alph4num3r1c":                              {"alphanumeric"},
+				"X-Remote-Extra-Percent%20encoded":                         {"percent encoded"},
+				"X-Remote-Extra-Almost%zzpercent%xxencoded":                {"not quite percent encoded"},
+				"X-Remote-Extra-Example.com%2fpercent%2520encoded":         {"url with double percent encoding"},
+				"X-Remote-Extra-Example.com%2F%E4%BB%8A%E6%97%A5%E3%81%AF": {"url with unicode"},
+				"X-Remote-Extra-Abc123!#$+.-_*\\^`~|'":                     {"header key legal characters"},
+			},
+			expectedUser: &user.DefaultInfo{
+				Name:   "Bob",
+				Groups: []string{"one-a", "one-b"},
+				Extra: map[string][]string{
+					"alpha":                         {"alphabetical"},
+					"alph4num3r1c":                  {"alphanumeric"},
+					"percent encoded":               {"percent encoded"},
+					"almost%zzpercent%xxencoded":    {"not quite percent encoded"},
+					"example.com/percent%20encoded": {"url with double percent encoding"},
+					"example.com/今日は":               {"url with unicode"},
+					"abc123!#$+.-_*\\^`~|'":         {"header key legal characters"},
 				},
 			},
 			expectedOk: true,

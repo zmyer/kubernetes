@@ -2,8 +2,11 @@ approvers:
 - Random-Liu
 - dchen1107
 - derekwaynecarr
-- timstclair
+- tallclair
 - vishh
 - yujuhong
 reviewers:
 - sig-node-reviewers
+labels:
+- area/kubelet
+- sig/node
