@@ -23,10 +23,10 @@ import (
 
 	"fmt"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	// Cloud providers
-	"k8s.io/kubernetes/pkg/cloudprovider"
+	cloudprovider "k8s.io/cloud-provider"
 	_ "k8s.io/kubernetes/pkg/cloudprovider/providers"
 	// Volume plugins
 	"k8s.io/kubernetes/pkg/volume"
@@ -38,7 +38,7 @@ import (
 	"k8s.io/kubernetes/pkg/volume/fc"
 	"k8s.io/kubernetes/pkg/volume/flexvolume"
 	"k8s.io/kubernetes/pkg/volume/flocker"
-	"k8s.io/kubernetes/pkg/volume/gce_pd"
+	"k8s.io/kubernetes/pkg/volume/gcepd"
 	"k8s.io/kubernetes/pkg/volume/glusterfs"
 	"k8s.io/kubernetes/pkg/volume/host_path"
 	"k8s.io/kubernetes/pkg/volume/iscsi"
@@ -67,7 +67,7 @@ func ProbeAttachableVolumePlugins() []volume.VolumePlugin {
 	allPlugins := []volume.VolumePlugin{}
 
 	allPlugins = append(allPlugins, awsebs.ProbeVolumePlugins()...)
-	allPlugins = append(allPlugins, gce_pd.ProbeVolumePlugins()...)
+	allPlugins = append(allPlugins, gcepd.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, cinder.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, portworx.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, vsphere_volume.ProbeVolumePlugins()...)
@@ -96,7 +96,7 @@ func ProbeExpandableVolumePlugins(config kubectrlmgrconfig.VolumeConfiguration) 
 	allPlugins := []volume.VolumePlugin{}
 
 	allPlugins = append(allPlugins, awsebs.ProbeVolumePlugins()...)
-	allPlugins = append(allPlugins, gce_pd.ProbeVolumePlugins()...)
+	allPlugins = append(allPlugins, gcepd.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, cinder.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, portworx.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, vsphere_volume.ProbeVolumePlugins()...)
@@ -133,7 +133,7 @@ func ProbeControllerVolumePlugins(cloud cloudprovider.Interface, config kubectrl
 		ProvisioningEnabled:      config.EnableHostPathProvisioning,
 	}
 	if err := AttemptToLoadRecycler(config.PersistentVolumeRecyclerConfiguration.PodTemplateFilePathHostPath, &hostPathConfig); err != nil {
-		glog.Fatalf("Could not create hostpath recycler pod from file %s: %+v", config.PersistentVolumeRecyclerConfiguration.PodTemplateFilePathHostPath, err)
+		klog.Fatalf("Could not create hostpath recycler pod from file %s: %+v", config.PersistentVolumeRecyclerConfiguration.PodTemplateFilePathHostPath, err)
 	}
 	allPlugins = append(allPlugins, host_path.ProbeVolumePlugins(hostPathConfig)...)
 
@@ -143,7 +143,7 @@ func ProbeControllerVolumePlugins(cloud cloudprovider.Interface, config kubectrl
 		RecyclerPodTemplate:      volume.NewPersistentVolumeRecyclerPodTemplate(),
 	}
 	if err := AttemptToLoadRecycler(config.PersistentVolumeRecyclerConfiguration.PodTemplateFilePathNFS, &nfsConfig); err != nil {
-		glog.Fatalf("Could not create NFS recycler pod from file %s: %+v", config.PersistentVolumeRecyclerConfiguration.PodTemplateFilePathNFS, err)
+		klog.Fatalf("Could not create NFS recycler pod from file %s: %+v", config.PersistentVolumeRecyclerConfiguration.PodTemplateFilePathNFS, err)
 	}
 	allPlugins = append(allPlugins, nfs.ProbeVolumePlugins(nfsConfig)...)
 	allPlugins = append(allPlugins, glusterfs.ProbeVolumePlugins()...)
@@ -159,7 +159,7 @@ func ProbeControllerVolumePlugins(cloud cloudprovider.Interface, config kubectrl
 	allPlugins = append(allPlugins, storageos.ProbeVolumePlugins()...)
 
 	allPlugins = append(allPlugins, awsebs.ProbeVolumePlugins()...)
-	allPlugins = append(allPlugins, gce_pd.ProbeVolumePlugins()...)
+	allPlugins = append(allPlugins, gcepd.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, cinder.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, vsphere_volume.ProbeVolumePlugins()...)
 	allPlugins = append(allPlugins, azure_dd.ProbeVolumePlugins()...)

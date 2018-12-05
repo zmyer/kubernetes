@@ -29,7 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	utilfeaturetesting "k8s.io/apiserver/pkg/util/feature/testing"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/kubernetes/pkg/features"
 	runtimeapi "k8s.io/kubernetes/pkg/kubelet/apis/cri/runtime/v1alpha2"
 
 	"github.com/stretchr/testify/assert"
@@ -229,13 +231,13 @@ func TestMergeDNSOptions(t *testing.T) {
 		expectedOptions          []string
 	}{
 		{
-			desc: "Empty dnsConfigOptions",
+			desc:                     "Empty dnsConfigOptions",
 			existingDNSConfigOptions: []string{"ndots:5", "debug"},
 			dnsConfigOptions:         nil,
 			expectedOptions:          []string{"ndots:5", "debug"},
 		},
 		{
-			desc: "No duplicated entries",
+			desc:                     "No duplicated entries",
 			existingDNSConfigOptions: []string{"ndots:5", "debug"},
 			dnsConfigOptions: []v1.PodDNSConfigOption{
 				{Name: "single-request"},
@@ -244,7 +246,7 @@ func TestMergeDNSOptions(t *testing.T) {
 			expectedOptions: []string{"ndots:5", "debug", "single-request", "attempts:3"},
 		},
 		{
-			desc: "Overwrite duplicated entries",
+			desc:                     "Overwrite duplicated entries",
 			existingDNSConfigOptions: []string{"ndots:5", "debug"},
 			dnsConfigOptions: []v1.PodDNSConfigOption{
 				{Name: "ndots", Value: &testOptionValue},
@@ -266,14 +268,6 @@ func TestMergeDNSOptions(t *testing.T) {
 }
 
 func TestGetPodDNSType(t *testing.T) {
-	customDNSEnabled := utilfeature.DefaultFeatureGate.Enabled("CustomPodDNS")
-	defer func() {
-		// Restoring the old value.
-		if err := utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("CustomPodDNS=%v", customDNSEnabled)); err != nil {
-			t.Errorf("Failed to set CustomPodDNS feature gate: %v", err)
-		}
-	}()
-
 	recorder := record.NewFakeRecorder(20)
 	nodeRef := &v1.ObjectReference{
 		Kind:      "Node",
@@ -343,7 +337,7 @@ func TestGetPodDNSType(t *testing.T) {
 			expectedDNSType: podDNSHost,
 		},
 		{
-			desc: "valid DNSNone with feature gate",
+			desc:                    "valid DNSNone with feature gate",
 			customPodDNSFeatureGate: true,
 			dnsPolicy:               v1.DNSNone,
 			expectedDNSType:         podDNSNone,
@@ -361,28 +355,28 @@ func TestGetPodDNSType(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		if err := utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("CustomPodDNS=%v", tc.customPodDNSFeatureGate)); err != nil {
-			t.Errorf("Failed to set CustomPodDNS feature gate: %v", err)
-		}
+		t.Run(tc.desc, func(t *testing.T) {
+			defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CustomPodDNS, tc.customPodDNSFeatureGate)()
 
-		if tc.hasClusterDNS {
-			configurer.clusterDNS = testClusterDNS
-		} else {
-			configurer.clusterDNS = nil
-		}
-		pod.Spec.DNSPolicy = tc.dnsPolicy
-		pod.Spec.HostNetwork = tc.hostNetwork
-
-		resType, err := getPodDNSType(pod)
-		if tc.expectedError {
-			if err == nil {
-				t.Errorf("%s: GetPodDNSType(%v) got no error, want error", tc.desc, pod)
+			if tc.hasClusterDNS {
+				configurer.clusterDNS = testClusterDNS
+			} else {
+				configurer.clusterDNS = nil
 			}
-			continue
-		}
-		if resType != tc.expectedDNSType {
-			t.Errorf("%s: GetPodDNSType(%v)=%v, want %v", tc.desc, pod, resType, tc.expectedDNSType)
-		}
+			pod.Spec.DNSPolicy = tc.dnsPolicy
+			pod.Spec.HostNetwork = tc.hostNetwork
+
+			resType, err := getPodDNSType(pod)
+			if tc.expectedError {
+				if err == nil {
+					t.Errorf("%s: GetPodDNSType(%v) got no error, want error", tc.desc, pod)
+				}
+				return
+			}
+			if resType != tc.expectedDNSType {
+				t.Errorf("%s: GetPodDNSType(%v)=%v, want %v", tc.desc, pod, resType, tc.expectedDNSType)
+			}
+		})
 	}
 }
 
@@ -482,14 +476,6 @@ func TestGetPodDNS(t *testing.T) {
 }
 
 func TestGetPodDNSCustom(t *testing.T) {
-	customDNSEnabled := utilfeature.DefaultFeatureGate.Enabled("CustomPodDNS")
-	defer func() {
-		// Restoring the old value.
-		if err := utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("CustomPodDNS=%v", customDNSEnabled)); err != nil {
-			t.Errorf("Failed to set CustomPodDNS feature gate: %v", err)
-		}
-	}()
-
 	recorder := record.NewFakeRecorder(20)
 	nodeRef := &v1.ObjectReference{
 		Kind:      "Node",
@@ -547,13 +533,13 @@ func TestGetPodDNSCustom(t *testing.T) {
 			},
 		},
 		{
-			desc: "feature gate is enabled, DNSNone without DNSConfig should have empty DNS settings",
+			desc:                    "feature gate is enabled, DNSNone without DNSConfig should have empty DNS settings",
 			customPodDNSFeatureGate: true,
 			dnsPolicy:               v1.DNSNone,
 			expectedDNSConfig:       &runtimeapi.DNSConfig{},
 		},
 		{
-			desc: "feature gate is enabled, DNSNone with DNSConfig should have a merged DNS settings",
+			desc:                    "feature gate is enabled, DNSNone with DNSConfig should have a merged DNS settings",
 			customPodDNSFeatureGate: true,
 			dnsPolicy:               v1.DNSNone,
 			dnsConfig: &v1.PodDNSConfig{
@@ -571,7 +557,7 @@ func TestGetPodDNSCustom(t *testing.T) {
 			},
 		},
 		{
-			desc: "feature gate is enabled, DNSClusterFirst with DNSConfig should have a merged DNS settings",
+			desc:                    "feature gate is enabled, DNSClusterFirst with DNSConfig should have a merged DNS settings",
 			customPodDNSFeatureGate: true,
 			dnsPolicy:               v1.DNSClusterFirst,
 			dnsConfig: &v1.PodDNSConfig{
@@ -589,7 +575,7 @@ func TestGetPodDNSCustom(t *testing.T) {
 			},
 		},
 		{
-			desc: "feature gate is enabled, DNSClusterFirstWithHostNet with DNSConfig should have a merged DNS settings",
+			desc:                    "feature gate is enabled, DNSClusterFirstWithHostNet with DNSConfig should have a merged DNS settings",
 			customPodDNSFeatureGate: true,
 			hostnetwork:             true,
 			dnsPolicy:               v1.DNSClusterFirstWithHostNet,
@@ -608,7 +594,7 @@ func TestGetPodDNSCustom(t *testing.T) {
 			},
 		},
 		{
-			desc: "feature gate is enabled, DNSDefault with DNSConfig should have a merged DNS settings",
+			desc:                    "feature gate is enabled, DNSDefault with DNSConfig should have a merged DNS settings",
 			customPodDNSFeatureGate: true,
 			dnsPolicy:               v1.DNSDefault,
 			dnsConfig: &v1.PodDNSConfig{
@@ -628,21 +614,21 @@ func TestGetPodDNSCustom(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		if err := utilfeature.DefaultFeatureGate.Set(fmt.Sprintf("CustomPodDNS=%v", tc.customPodDNSFeatureGate)); err != nil {
-			t.Errorf("Failed to set CustomPodDNS feature gate: %v", err)
-		}
+		t.Run(tc.desc, func(t *testing.T) {
+			defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CustomPodDNS, tc.customPodDNSFeatureGate)()
 
-		testPod.Spec.HostNetwork = tc.hostnetwork
-		testPod.Spec.DNSConfig = tc.dnsConfig
-		testPod.Spec.DNSPolicy = tc.dnsPolicy
+			testPod.Spec.HostNetwork = tc.hostnetwork
+			testPod.Spec.DNSConfig = tc.dnsConfig
+			testPod.Spec.DNSPolicy = tc.dnsPolicy
 
-		resDNSConfig, err := configurer.GetPodDNS(testPod)
-		if err != nil {
-			t.Errorf("%s: GetPodDNS(%v), unexpected error: %v", tc.desc, testPod, err)
-		}
-		if !dnsConfigsAreEqual(resDNSConfig, tc.expectedDNSConfig) {
-			t.Errorf("%s: GetPodDNS(%v)=%v, want %v", tc.desc, testPod, resDNSConfig, tc.expectedDNSConfig)
-		}
+			resDNSConfig, err := configurer.GetPodDNS(testPod)
+			if err != nil {
+				t.Errorf("%s: GetPodDNS(%v), unexpected error: %v", tc.desc, testPod, err)
+			}
+			if !dnsConfigsAreEqual(resDNSConfig, tc.expectedDNSConfig) {
+				t.Errorf("%s: GetPodDNS(%v)=%v, want %v", tc.desc, testPod, resDNSConfig, tc.expectedDNSConfig)
+			}
+		})
 	}
 }
 

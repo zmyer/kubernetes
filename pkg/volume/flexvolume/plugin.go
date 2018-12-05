@@ -23,7 +23,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	api "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -57,9 +57,12 @@ type flexVolumeAttachablePlugin struct {
 
 var _ volume.AttachableVolumePlugin = &flexVolumeAttachablePlugin{}
 var _ volume.PersistentVolumePlugin = &flexVolumePlugin{}
+var _ volume.FSResizableVolumePlugin = &flexVolumePlugin{}
+var _ volume.ExpandableVolumePlugin = &flexVolumePlugin{}
 
 var _ volume.DeviceMountableVolumePlugin = &flexVolumeAttachablePlugin{}
 
+// PluginFactory create flex volume plugin
 type PluginFactory interface {
 	NewFlexVolumePlugin(pluginDir, driverName string, runner exec.Interface) (volume.VolumePlugin, error)
 }
@@ -89,9 +92,8 @@ func (pluginFactory) NewFlexVolumePlugin(pluginDir, name string, runner exec.Int
 	if flexPlugin.capabilities.Attach {
 		// Plugin supports attach/detach, so return flexVolumeAttachablePlugin
 		return &flexVolumeAttachablePlugin{flexVolumePlugin: flexPlugin}, nil
-	} else {
-		return flexPlugin, nil
 	}
+	return flexPlugin, nil
 }
 
 // Init is part of the volume.VolumePlugin interface.
@@ -133,7 +135,7 @@ func (plugin *flexVolumePlugin) GetVolumeName(spec *volume.Spec) (string, error)
 		return "", err
 	}
 
-	glog.Warning(logPrefix(plugin), "GetVolumeName is not supported yet. Defaulting to PV or volume name: ", name)
+	klog.Warning(logPrefix(plugin), "GetVolumeName is not supported yet. Defaulting to PV or volume name: ", name)
 
 	return name, nil
 }
@@ -304,4 +306,8 @@ func (plugin *flexVolumePlugin) getDeviceMountPath(spec *volume.Spec) (string, e
 
 	mountsDir := path.Join(plugin.host.GetPluginDir(flexVolumePluginName), plugin.driverName, "mounts")
 	return path.Join(mountsDir, volumeName), nil
+}
+
+func (plugin *flexVolumePlugin) RequiresFSResize() bool {
+	return plugin.capabilities.RequiresFSResize
 }

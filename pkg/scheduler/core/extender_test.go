@@ -27,6 +27,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulerinternalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
 	schedulertesting "k8s.io/kubernetes/pkg/scheduler/testing"
 	"k8s.io/kubernetes/pkg/scheduler/util"
@@ -117,6 +118,10 @@ type FakeExtender struct {
 
 	// Cached node information for fake extender
 	cachedNodeNameToInfo map[string]*schedulercache.NodeInfo
+}
+
+func (f *FakeExtender) Name() string {
+	return "FakeExtender"
 }
 
 func (f *FakeExtender) IsIgnorable() bool {
@@ -498,7 +503,7 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			for ii := range test.extenders {
 				extenders = append(extenders, &test.extenders[ii])
 			}
-			cache := schedulercache.New(time.Duration(0), wait.NeverStop)
+			cache := schedulerinternalcache.New(time.Duration(0), wait.NeverStop)
 			for _, name := range test.nodes {
 				cache.AddNode(createNode(name))
 			}
@@ -511,6 +516,7 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 				algorithm.EmptyPredicateMetadataProducer,
 				test.prioritizers,
 				algorithm.EmptyPriorityMetadataProducer,
+				emptyPluginSet,
 				extenders,
 				nil,
 				schedulertesting.FakePersistentVolumeClaimLister{},
